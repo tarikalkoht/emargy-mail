@@ -2,31 +2,30 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, Trash2,
 } from 'lucide-react';
-import { prepareEmailHtml, sanitizeForEditor } from '../emailHtml';
+import { measureEmailHeight, prepareEmailHtml, sanitizeForEditor } from '../emailHtml';
 import { classNames, displayName, escapeHtml, formatFullDate, formatListDate, formatSize, initial, parseAddresses, senderHue, textToHtml } from '../lib/format';
 
-function MessageFrame({ html, title }) {
+function MessageFrame({ html, body, title }) {
   const ref = useRef(null);
   const [height, setHeight] = useState(160);
   useEffect(() => {
     const frame = ref.current;
     if (!frame) return undefined;
-    let observer;
-    const measure = () => {
-      const doc = frame.contentDocument;
-      if (!doc?.body) return;
-      setHeight(Math.max(80, doc.documentElement.scrollHeight + 4));
-      if (!observer) {
-        observer = new ResizeObserver(() => setHeight(Math.max(80, doc.documentElement.scrollHeight + 4)));
-        observer.observe(doc.body);
-      }
+    let cancelled = false;
+    const update = () => {
+      const { height: first, settled } = measureEmailHeight(body, frame.clientWidth);
+      setHeight(Math.max(60, first + 56));
+      settled.then((final) => { if (!cancelled) setHeight(Math.max(60, final + 56)); });
     };
-    frame.addEventListener('load', measure);
-    measure();
-    return () => { frame.removeEventListener('load', measure); observer?.disconnect(); };
-  }, [html]);
-  // Scripts never run (no allow-scripts). Same-origin only lets the app measure the height.
-  return <iframe ref={ref} className="message-frame" title={title} style={{ height }} sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={html} />;
+    update();
+    let lastWidth = frame.clientWidth;
+    const observer = new ResizeObserver(() => { if (frame.clientWidth !== lastWidth) { lastWidth = frame.clientWidth; update(); } });
+    observer.observe(frame);
+    return () => { cancelled = true; observer.disconnect(); };
+  }, [body]);
+  // Fully isolated: opaque origin, no scripts. Links open only through the app's confirmation.
+  // If the estimate is ever short, the frame scrolls instead of cutting content.
+  return <iframe ref={ref} className="message-frame" title={title} style={{ height }} sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={html} />;
 }
 
 function Avatar({ value, size = 36 }) {
@@ -85,7 +84,7 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
         </div>
       )}
       <div className="message-body">
-        {prepared ? <MessageFrame html={prepared.srcDoc} title={content.subject} /> : <div className="plain-body" dir="auto">{content.text}</div>}
+        {prepared ? <MessageFrame html={prepared.srcDoc} body={prepared.body} title={content.subject} /> : <div className="plain-body" dir="auto">{content.text}</div>}
       </div>
       {!!content.attachments?.length && (
         <div className="attachment-strip">

@@ -102,8 +102,31 @@ export function prepareEmailHtml(html, { allowRemote = false, inlineImages = {} 
   const imageSources = allowRemote ? 'data: https: http:' : 'data:';
   const csp = `default-src 'none'; style-src 'unsafe-inline'; img-src ${imageSources}; font-src data:; media-src 'none'; form-action 'none'`;
   const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">`
-    + '<base target="_blank"><style>body{font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#20242a;line-height:1.55;margin:24px;overflow-wrap:anywhere}'
-    + 'img{max-width:100%;height:auto}img[data-blocked]{display:inline-block;min-width:24px;min-height:16px;background:#eef1f5;outline:1px dashed #b7c0cc}a{color:#0b66d4}</style>'
+    + `<base target="_blank"><style>body{${FRAME_BODY_CSS}}${FRAME_CSS}</style>`
     + `</head><body>${body}</body></html>`;
-  return { srcDoc, blockedCount: counter.blocked };
+  return { srcDoc, body, blockedCount: counter.blocked };
+}
+
+const FRAME_BODY_CSS = 'font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#20242a;line-height:1.55;margin:0;padding:8px 0 16px;overflow-wrap:anywhere';
+const FRAME_CSS = 'img{max-width:100%;height:auto}img[data-blocked]{display:inline-block;min-width:24px;min-height:16px;background:#eef1f5;outline:1px dashed #b7c0cc}a{color:#0b66d4}';
+
+/**
+ * Estimate the rendered height of sanitised email HTML without giving the email
+ * frame access to the app: the same sanitised markup is laid out in a hidden,
+ * style-isolated shadow root at the frame's width. (No scripts can exist in it.)
+ */
+export function measureEmailHeight(body, width) {
+  const host = document.createElement('div');
+  host.style.cssText = `position:absolute;visibility:hidden;pointer-events:none;inset-inline-start:-100000px;top:0;width:${width}px;`;
+  const root = host.attachShadow({ mode: 'closed' });
+  root.innerHTML = `<style>.frame-body{${FRAME_BODY_CSS};display:flow-root}${FRAME_CSS}</style><div class="frame-body">${body}</div>`;
+  document.body.appendChild(host);
+  const images = [...root.querySelectorAll('img')].filter((img) => !img.complete);
+  const measure = () => Math.ceil(root.querySelector('.frame-body').getBoundingClientRect().height);
+  return {
+    height: measure(),
+    settled: Promise.all(images.map((img) => new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; setTimeout(resolve, 3000); })))
+      .then(() => measure())
+      .finally(() => host.remove()),
+  };
 }
