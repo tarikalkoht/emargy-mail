@@ -1,8 +1,10 @@
 /**
  * Drives the real Electron app against the local demo mail server:
- * create project → add account → read mail → reply with approval → check security.
+ * first-run setup → read a conversation → create a signature → reply with the
+ * rich editor → undo window → delivery → Arabic/RTL → dark mode → storage check.
  *
  *   npm run build && node scripts/e2e-app.cjs <screenshot-dir>
+ *   EMARGY_EXE="release/win-unpacked/Emargy Mail.exe" node scripts/e2e-app.cjs <dir>
  */
 const fs = require('node:fs');
 const os = require('node:os');
@@ -13,89 +15,130 @@ const { startDemoServers, DEMO_USER, DEMO_PASSWORD } = require('./demo-mail-serv
 const shotsDir = path.resolve(process.argv[2] || path.join(os.tmpdir(), 'emargy-shots'));
 const step = (name) => console.log(`✔ ${name}`);
 
+async function setupAccount(page, servers, { projectName, name }) {
+  await page.getByLabel(/Project name|اسم المشروع/).fill(projectName);
+  await page.getByLabel(/Your name|اسمك/).fill(name);
+  await page.getByLabel(/Email address|عنوان البريد/).fill(DEMO_USER);
+  await page.getByLabel(/^Password$|^كلمة المرور$/).fill(DEMO_PASSWORD);
+  await page.waitForTimeout(300);
+  await page.getByRole('button', { name: /Server settings|إعدادات الخادم/ }).click();
+  await page.getByLabel(/Incoming server|خادم الوارد/).fill('127.0.0.1');
+  await page.getByLabel(/Outgoing server|خادم الصادر/).fill('127.0.0.1');
+  const ports = page.getByLabel(/^Port$|^المنفذ$/);
+  await ports.nth(0).fill(String(servers.imapPort));
+  await ports.nth(1).fill(String(servers.smtpPort));
+  for (const box of await page.getByRole('checkbox', { name: 'SSL/TLS' }).all()) await box.uncheck();
+}
+
 async function main() {
   fs.mkdirSync(shotsDir, { recursive: true });
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'emargy-e2e-'));
   const servers = await startDemoServers({ imapPort: 0, smtpPort: 0 });
-  // EMARGY_EXE=release/win-unpacked/Emargy Mail.exe tests the packaged build instead of the sources.
   const packaged = process.env.EMARGY_EXE;
   const app = await electron.launch({
     executablePath: packaged ? path.resolve(packaged) : require('electron'),
     args: packaged ? [] : [path.join(__dirname, '..')],
     env: { ...process.env, EMARGY_DATA_DIR: dataDir, EMARGY_USE_DIST: '1' },
   });
-  const blockedRequests = [];
+  const outgoing = [];
   try {
     const page = await app.firstWindow();
-    await page.setViewportSize({ width: 1500, height: 900 }).catch(() => {});
-    page.on('requestfailed', (request) => blockedRequests.push(request.url()));
-    await page.waitForSelector('.app-shell');
-    const shot = (name) => page.screenshot({ path: path.join(shotsDir, `${name}.png`) });
+    page.on('request', (request) => { if (/^https?:/.test(request.url())) outgoing.push(request.url()); });
+    const window = await app.browserWindow(page);
+    await window.evaluate((w) => { w.setSize(1440, 900); w.center(); });
+    const shot = async (name) => { await page.waitForTimeout(250); await page.screenshot({ path: path.join(shotsDir, `${name}.png`) }); };
 
-    await page.getByRole('button', { name: 'Add project' }).last().click();
-    await page.getByLabel('Project name').fill('Emargy Demo');
-    await page.getByRole('button', { name: 'Create project' }).click();
-    step('project created');
+    await page.waitForSelector('.welcome');
+    await setupAccount(page, servers, { projectName: 'Emargy', name: 'Tarek' });
+    await shot('01-welcome');
+    await page.getByRole('button', { name: /Connect account|ربط الحساب/ }).click();
+    await page.waitForSelector('.app .row', { timeout: 30000 });
+    await page.locator('.row').nth(3).waitFor();
+    step(`first-run setup connected the account (${await page.locator('.row').count()} conversations)`);
 
-    await page.getByRole('button', { name: 'Add account' }).last().click();
-    const modal = page.getByRole('dialog');
-    await modal.getByLabel('Sender name').fill('Demo');
-    await modal.getByLabel('Email address').fill(DEMO_USER);
-    await modal.getByLabel('Password or app password').fill(DEMO_PASSWORD);
-    await modal.getByLabel('IMAP host').fill('127.0.0.1');
-    await modal.getByLabel('IMAP port').fill(String(servers.imapPort));
-    await modal.getByLabel('SMTP host').fill('127.0.0.1');
-    await modal.getByLabel('SMTP port').fill(String(servers.smtpPort));
-    for (const box of await modal.getByRole('checkbox').all()) await box.uncheck();
-    await shot('01-add-account');
-    await modal.getByRole('button', { name: 'Test and save account' }).click();
-    await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 20000 });
-    step('account verified and saved');
+    await page.locator('.row', { hasText: 'Black Friday' }).click();
+    await page.locator('.privacy-note').waitFor();
+    await shot('02-inbox-and-privacy');
+    step('newsletter opened; images and tracker blocked');
 
-    await page.locator('.message-row').nth(3).waitFor({ timeout: 20000 });
-    await shot('02-inbox');
-    step(`inbox synced (${await page.locator('.message-row').count()} messages)`);
-
-    await page.locator('.message-row', { hasText: 'Black Friday' }).click();
-    await page.locator('.privacy-banner').waitFor();
-    await shot('03-images-blocked');
-    step('remote images and tracker blocked');
-
-    await page.locator('.message-row', { hasText: 'عرض سعر' }).click();
-    await page.locator('.reader h1', { hasText: 'عرض سعر' }).waitFor();
-    await page.getByRole('button', { name: 'العربية' }).click();
-    await page.waitForFunction(() => document.documentElement.dir === 'rtl');
-    await shot('04-arabic-rtl');
-    step('Arabic interface (RTL)');
-
-    await page.getByTitle('رد', { exact: true }).click();
-    await page.locator('.compose-body').fill('شكراً أحمد، استلمنا العرض وسنرد قريباً.\n\n' + await page.locator('.compose-body').inputValue());
-    await page.getByRole('button', { name: 'إرسال', exact: true }).click();
-    await page.getByRole('dialog', { name: 'هل توافق على إرسال هذه الرسالة؟' }).waitFor();
-    await page.waitForTimeout(500);
-    await shot('05-approval');
-    await page.getByRole('button', { name: 'موافقة وإرسال' }).click();
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('tab', { name: 'Signatures' }).click();
+    await page.getByRole('button', { name: 'New signature' }).click();
+    await page.getByLabel('Name', { exact: true }).fill('Work');
+    const sigEditor = page.locator('.signature-editor .rich-content');
+    await sigEditor.click();
+    await page.keyboard.type('Tarek Alkoht');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Emargy · +971 50 000 0000');
+    await shot('03-signature-editor');
+    await page.getByRole('button', { name: 'Save signature' }).click();
+    await page.getByRole('tab', { name: 'Accounts' }).click();
+    await page.getByLabel('Signature for new messages').selectOption({ label: 'Work' });
+    await page.getByLabel('Signature for replies and forwards').selectOption({ label: 'Work' });
+    await page.getByRole('button', { name: 'Save changes' }).click();
     await page.locator('.toast').waitFor();
-    for (let i = 0; i < 50 && !servers.delivered.length; i += 1) await page.waitForTimeout(100);
+    step('signature created and assigned to the account');
+
+    await page.getByRole('button', { name: 'All inboxes' }).click();
+    await page.locator('.row', { hasText: 'عرض سعر' }).click();
+    await page.locator('.thread-head h1', { hasText: 'عرض سعر' }).waitFor();
+    await page.locator('.thread-toolbar').getByRole('button', { name: 'Reply', exact: true }).click();
+    const editor = page.locator('.composer .rich-content');
+    await editor.waitFor();
+    await page.locator('.composer .signature-block', { hasText: 'Tarek Alkoht' }).waitFor();
+    await page.keyboard.type('شكراً أحمد، استلمنا ');
+    await page.keyboard.press('Control+b');
+    await page.keyboard.type('عرض السعر');
+    await page.keyboard.press('Control+b');
+    await page.keyboard.type(' وسنرد قبل الخميس.');
+    await shot('04-reply-editor');
+    step('reply composer: formatting, Arabic text, signature inserted automatically');
+
+    await page.locator('.composer').getByRole('button', { name: 'Send', exact: true }).click();
+    await page.locator('.toast', { hasText: 'Sending' }).waitFor();
+    await shot('05-undo-send');
+    for (let i = 0; i < 150 && !servers.delivered.length; i += 1) await page.waitForTimeout(100);
     if (!servers.delivered.length) throw new Error('Reply was not delivered.');
-    step(`reply delivered to SMTP: "${servers.delivered[0].parsed.subject}" → ${servers.delivered[0].envelope.rcptTo.map((r) => r.address)}`);
+    const sent = servers.delivered[0].parsed;
+    if (!/<strong>عرض السعر<\/strong>/.test(sent.html) || !/Tarek Alkoht/.test(sent.html)) throw new Error('Sent HTML is missing formatting or signature.');
+    step(`after the undo window, delivered "${sent.subject}" with formatting and signature`);
+    await page.waitForTimeout(500);
+    const draftsLeft = await app.evaluate(() => null).then(() => page.evaluate(() => window.emargy.getState().then((s) => s.drafts.length)));
+    if (draftsLeft) throw new Error(`${draftsLeft} draft(s) left behind after sending.`);
+    step('no leftover draft after sending');
 
-    await page.getByRole('button', { name: 'الإعدادات والأمان' }).click();
-    await page.locator('.security-card').waitFor();
-    await shot('06-security-settings');
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('radio', { name: 'العربية' }).click();
+    await page.waitForFunction(() => document.documentElement.dir === 'rtl');
+    await page.getByRole('button', { name: 'كل الوارد' }).click();
+    await page.locator('.row', { hasText: 'عرض سعر' }).click();
+    await page.locator('.thread-message').last().waitFor();
+    await shot('06-arabic-rtl');
+    step('Arabic interface, right-to-left');
 
-    await page.getByRole('button', { name: 'English' }).click();
-    await page.getByRole('button', { name: 'Activity' }).click();
-    await page.locator('.audit-row').first().waitFor();
-    await shot('07-activity-log');
-    step('activity log recorded');
+    await page.getByRole('button', { name: 'الإعدادات' }).click();
+    await page.getByRole('radio', { name: 'داكن' }).click();
+    await page.getByRole('button', { name: 'كل الوارد' }).click();
+    await page.locator('.row', { hasText: 'Invoice' }).click();
+    await page.locator('.thread-message').waitFor();
+    await shot('07-dark');
+    step('dark mode');
 
+    await page.getByRole('button', { name: 'رسالة جديدة' }).click();
+    await page.locator('.composer:not(.inline)').waitFor();
+    await page.getByLabel('إلى').fill('sa');
+    await page.locator('.suggestions li').first().waitFor();
+    await shot('08-new-message');
+    step('new message with contact suggestions');
+
+    await app.evaluate(() => {});
     const files = fs.readdirSync(dataDir).filter((f) => /emargy\.db/.test(f)).map((f) => fs.readFileSync(path.join(dataDir, f)).toString('latin1')).join('');
-    const leaks = ['Black Friday', 'alnoor', DEMO_USER, DEMO_PASSWORD, 'Emargy Demo', 'INV-2026-118'].filter((s) => files.includes(s));
+    const leaks = ['Black Friday', 'alnoor', DEMO_USER, DEMO_PASSWORD, 'Tarek Alkoht', 'INV-2026-118'].filter((s) => files.includes(s));
     if (leaks.length) throw new Error(`Plaintext found in database: ${leaks.join(', ')}`);
-    step('database contains no readable mail, addresses, project names or passwords');
-    const leakedOut = blockedRequests.filter((url) => /marketing-shop/.test(url));
-    step(`tracker/image requests that left the app: ${leakedOut.length}`);
+    step('database holds no readable mail, addresses, signature or password');
+    const external = outgoing.filter((url) => !/^https?:\/\/127\.0\.0\.1/.test(url));
+    if (external.length) throw new Error(`The interface contacted the internet: ${external.join(', ')}`);
+    step('the interface made no internet requests');
   } finally {
     await app.close();
     await servers.stop();

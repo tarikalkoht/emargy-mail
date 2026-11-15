@@ -4,7 +4,7 @@ const { buildRawMessage, detectServers, imapConfig, parseRawMessage, verifySmtp,
 const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
 const PROVIDERS = new Set(['custom', 'gmail', 'zoho', 'outlook']);
 const LIST_FILTERS = new Set(['all', 'unread', 'important', 'flagged', 'attachments']);
-const FOLDER_ROLES = new Set(['inbox', 'sent', 'archive', 'trash', 'junk', 'drafts', 'all', 'custom']);
+const FOLDER_ROLES = new Set(['inbox', 'sent', 'archive', 'trash', 'junk', 'drafts', 'all', 'custom', 'any']);
 
 const DEFAULT_SETTINGS = {
   theme: 'system',
@@ -247,6 +247,12 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       });
     },
 
+    /** Message ids of a conversation; sameFolder keeps only those in the anchor's folder. */
+    threadIds(id, sameFolder = false) {
+      const anchor = db.getMessage(text(id, 200));
+      return db.threadMessages(anchor.id).filter((m) => !sameFolder || m.folderId === anchor.folderId).map((m) => m.id);
+    },
+
     /** Open a whole conversation: every message, decrypted and parsed, oldest first. */
     async openThread(id) {
       const messages = db.threadMessages(text(id, 200));
@@ -322,6 +328,20 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       let raw = db.getRaw(message.id);
       if (!raw) raw = await sync.worker(message.accountId).fetchRaw(message);
       return extractAttachment(raw, Number(index));
+    },
+
+    /** Original attachments, so a forwarded message keeps its files. */
+    async forwardAttachments(messageId) {
+      const message = db.getMessage(text(messageId, 200));
+      let raw = db.getRaw(message.id);
+      if (!raw) raw = await sync.worker(message.accountId).fetchRaw(message);
+      const parsed = await parseRawMessage(raw);
+      const files = [];
+      for (const attachment of parsed.attachments) {
+        const file = await extractAttachment(raw, attachment.index);
+        files.push({ filename: file.filename, contentType: attachment.contentType, size: file.content.length, content: file.content.toString('base64') });
+      }
+      return files;
     },
 
     contacts(query) {

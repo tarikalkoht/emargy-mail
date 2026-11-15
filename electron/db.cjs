@@ -67,13 +67,27 @@ function searchText(header) {
   return [header.subject, header.from, header.to, header.cc, header.preview].filter(Boolean).join(' ').toLowerCase();
 }
 
-const ADDRESS = /(?:"?([^"<,]*?)"?\s*)?<?([^\s<>,;"]+@[^\s<>,;"]+)>?/g;
-
+/** Split an address list on commas/semicolons that are outside quotes and <…>. */
 function parseAddressList(value = '') {
+  const parts = [];
+  let current = '';
+  let quoted = false;
+  let angle = false;
+  for (const char of String(value)) {
+    if (char === '"') quoted = !quoted;
+    else if (char === '<' && !quoted) angle = true;
+    else if (char === '>' && !quoted) angle = false;
+    if ((char === ',' || char === ';') && !quoted && !angle) { parts.push(current); current = ''; } else current += char;
+  }
+  parts.push(current);
   const result = [];
-  for (const match of String(value).matchAll(ADDRESS)) {
-    const address = match[2].toLowerCase();
-    const name = (match[1] || '').trim();
+  for (const part of parts) {
+    const text = part.trim();
+    const bracket = text.match(/^(.*)<\s*([^<>\s]+@[^<>\s]+)\s*>\s*$/);
+    const bare = !bracket && text.match(/[^\s<>"]+@[^\s<>"]+/);
+    if (!bracket && !bare) continue;
+    const address = (bracket ? bracket[2] : bare[0]).toLowerCase();
+    const name = bracket ? bracket[1].trim().replace(/^"|"$/g, '').trim() : '';
     result.push({ name: name && name.toLowerCase() !== address ? name : '', address });
   }
   return result;
@@ -383,7 +397,8 @@ class Database {
   listMessages({ projectId = 'all', accountId = 'all', folderId = null, folderRole = 'inbox', filter = 'all', query = '', offset = 0, limit = 200, threaded = true } = {}) {
     const needle = String(query || '').trim().toLowerCase();
     const matches = this.sorted.filter((m) => {
-      if (folderId ? m.folderId !== folderId : (needle ? ['trash', 'junk'].includes(m.folderRole) : m.folderRole !== folderRole)) return false;
+      const anyFolder = needle || folderRole === 'any';
+      if (folderId ? m.folderId !== folderId : (anyFolder ? ['trash', 'junk'].includes(m.folderRole) : m.folderRole !== folderRole)) return false;
       if (projectId !== 'all' && m.projectId !== projectId) return false;
       if (accountId !== 'all' && m.accountId !== accountId) return false;
       if (filter === 'unread' && m.read) return false;
@@ -566,4 +581,4 @@ class Database {
   }
 }
 
-module.exports = { Database };
+module.exports = { Database, parseAddressList };

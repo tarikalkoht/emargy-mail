@@ -24,6 +24,27 @@ function rewriteCssUrls(css, allowRemote, inlineImages, counter) {
 }
 
 /**
+ * Clean HTML that goes into the editor (quoted replies, pasted content):
+ * no scripts, no remote images (they would load trackers while composing).
+ */
+export function sanitizeForEditor(html) {
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'IMG') {
+      const src = node.getAttribute('src') || '';
+      // An <img> without src is dropped by the editor's image parser.
+      if (!/^data:image\//i.test(src)) node.removeAttribute('src');
+      node.removeAttribute('srcset');
+    }
+    if (node.hasAttribute?.('style')) node.setAttribute('style', node.getAttribute('style').replace(CSS_URL, 'none'));
+  });
+  try {
+    return DOMPurify.sanitize(html || '', { FORBID_TAGS: [...FORBID_TAGS, 'style'], FORBID_ATTR: ['srcdoc', 'background'], ALLOW_DATA_ATTR: false });
+  } finally {
+    DOMPurify.removeAllHooks();
+  }
+}
+
+/**
  * Turn untrusted email HTML into a document that can be shown in a sandboxed
  * iframe. Scripts, forms and embeds are removed; remote images and CSS
  * backgrounds are blocked unless the reader allows them; every link opens

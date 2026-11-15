@@ -140,6 +140,7 @@ function registerHandlers() {
   handle('sync:all', () => api.syncAll());
   handle('messages:list', (params) => api.listMessages(params));
   handle('thread:open', (id) => api.openThread(id));
+  handle('thread:ids', (id, sameFolder) => api.threadIds(id, sameFolder));
   handle('messages:read', (ids, read) => api.setRead(ids, read));
   handle('messages:flag', (ids, flagged) => api.setFlagged(ids, flagged));
   handle('messages:archive', (ids) => api.archive(ids));
@@ -147,6 +148,7 @@ function registerHandlers() {
   handle('messages:move', (ids, folderId) => api.moveTo(ids, folderId));
   handle('images:trust', (address) => api.trustImages(address));
   handle('contacts:search', (query) => api.contacts(query));
+  handle('attachments:forward', (messageId) => api.forwardAttachments(messageId));
   handle('signature:save', (input) => api.saveSignature(input));
   handle('signature:delete', (id) => api.deleteSignature(id));
   handle('draft:save', (draft) => api.saveDraft(draft));

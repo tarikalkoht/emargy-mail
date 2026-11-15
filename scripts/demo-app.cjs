@@ -1,6 +1,7 @@
 /**
  * Opens Emargy Mail in demo mode: a local demo mail server plus a separate demo
- * data folder, with a project and account already added. Real data is untouched.
+ * data folder, with a project, an account and a signature already set up.
+ * Real data is untouched. Close the window to end the demo.
  *
  *   node scripts/demo-app.cjs [path-to-Emargy Mail.exe]
  */
@@ -21,24 +22,32 @@ async function main() {
     env: { ...process.env, EMARGY_DATA_DIR: dataDir, EMARGY_USE_DIST: '1' },
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('.app-shell');
+  const window = await app.browserWindow(page);
+  await window.evaluate((w) => { w.setSize(1440, 900); w.center(); });
+  await page.waitForSelector('.welcome');
   await page.getByRole('button', { name: 'العربية' }).click();
-  await page.getByRole('button', { name: 'إضافة مشروع' }).last().click();
-  await page.getByLabel('اسم المشروع').fill('مشروع تجريبي');
-  await page.getByRole('button', { name: 'إنشاء المشروع' }).click();
-  await page.getByRole('button', { name: 'إضافة حساب' }).last().click();
-  const modal = page.getByRole('dialog');
-  await modal.getByLabel('اسم المرسل').fill('حساب تجريبي');
-  await modal.getByLabel('عنوان البريد').fill(DEMO_USER);
-  await modal.getByLabel('كلمة المرور أو كلمة مرور التطبيق').fill(DEMO_PASSWORD);
-  await modal.getByLabel('خادم IMAP').fill('127.0.0.1');
-  await modal.getByLabel('منفذ IMAP').fill(String(servers.imapPort));
-  await modal.getByLabel('خادم SMTP').fill('127.0.0.1');
-  await modal.getByLabel('منفذ SMTP').fill(String(servers.smtpPort));
-  for (const box of await modal.getByRole('checkbox').all()) await box.uncheck();
-  await modal.getByRole('button', { name: 'اختبار وحفظ الحساب' }).click();
-  await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 20000 });
-  console.log('Demo is open. Close the Emargy Mail window to end the demo.');
+  await page.getByLabel('اسم المشروع').fill('إيمارجي');
+  await page.getByLabel(/اسمك/).fill('طارق');
+  await page.getByLabel('عنوان البريد').fill(DEMO_USER);
+  await page.getByLabel('كلمة المرور', { exact: true }).fill(DEMO_PASSWORD);
+  await page.waitForTimeout(300);
+  await page.getByRole('button', { name: 'إعدادات الخادم' }).click();
+  await page.getByLabel('خادم الوارد (IMAP)').fill('127.0.0.1');
+  await page.getByLabel('خادم الصادر (SMTP)').fill('127.0.0.1');
+  const ports = page.getByLabel('المنفذ', { exact: true });
+  await ports.nth(0).fill(String(servers.imapPort));
+  await ports.nth(1).fill(String(servers.smtpPort));
+  for (const box of await page.getByRole('checkbox', { name: 'SSL/TLS' }).all()) await box.uncheck();
+  await page.getByRole('button', { name: 'ربط الحساب' }).click();
+  await page.waitForSelector('.app .row', { timeout: 30000 });
+  const state = await page.evaluate(async () => {
+    await window.emargy.saveSignature({ name: 'توقيع العمل', html: '<p><strong>طارق</strong></p><p>إيمارجي — +971 50 000 0000</p>' });
+    const s = await window.emargy.getState();
+    return window.emargy.updateAccount(s.accounts[0].id, { signatureNew: s.signatures[0].id, signatureReply: s.signatures[0].id });
+  });
+  await page.reload();
+  await page.waitForSelector('.app .row');
+  console.log(`Demo is open (${state.accounts.length} account). Close the Emargy Mail window to end the demo.`);
   await new Promise((resolve) => app.on('close', resolve));
   await servers.stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
