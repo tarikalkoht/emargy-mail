@@ -1,0 +1,60 @@
+{
+  "name": "emargy-mail",
+  "version": "0.1.0",
+  "description": "Open-source, local-first email client for multiple projects and accounts.",
+  "main": "electron/main.cjs",
+  "author": "Emargy contributors",
+  "license": "AGPL-3.0-only",
+  "private": false,
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dist:win": "npm run test && npm run build && electron-builder --win nsis portable"
+  },
+  "build": {
+    "appId": "com.emargy.mail",
+    "productName": "Emargy Mail",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "Emargy-Mail-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "dompurify": "^3.4.18",
+    "imapflow": "^2.11.0",
+    "lucide-react": "^1.73.0",
+    "mailparser": "^3.14.3",
+    "nodemailer": "^10.5.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.3.0",
+    "concurrently": "^10.0.7",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0",
+    "wait-on": "^9.5.1"
+  }
+}
