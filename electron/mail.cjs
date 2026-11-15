@@ -1,3 +1,6 @@
+const crypto = require('node:crypto');
+const dns = require('node:dns/promises');
+const { convert } = require('html-to-text');
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const { simpleParser } = require('mailparser');
@@ -47,18 +50,44 @@ function senderHeader(account) {
   return account.displayName ? { name: account.displayName, address: account.email } : account.email;
 }
 
+/** Pasted images arrive as data: URLs; send them as proper inline (cid:) attachments. */
+function extractInlineImages(html) {
+  const inline = [];
+  const rewritten = String(html || '').replace(/<img([^>]*?)src="data:(image\/[a-z0-9.+-]+);base64,([^"]+)"/gi, (_match, before, contentType, data) => {
+    const cid = `img-${crypto.randomUUID()}@emargy`;
+    inline.push({ cid, contentType, content: Buffer.from(data, 'base64'), filename: `image-${inline.length + 1}.${contentType.split('/')[1].replace('jpeg', 'jpg')}`, contentDisposition: 'inline' });
+    return `<img${before}src="cid:${cid}"`;
+  });
+  return { html: rewritten, inline };
+}
+
+function htmlDocument(body) {
+  return '<!doctype html><html><head><meta charset="utf-8"></head>'
+    + `<body><div style="font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:14px;line-height:1.6">${body}</div></body></html>`;
+}
+
 /** Build the exact RFC 822 message once, so retries and the Sent copy are identical. */
 async function buildRawMessage(account, payload) {
+  const files = (payload.attachments || []).map((file) => ({ filename: file.filename, content: Buffer.from(file.content, 'base64'), contentType: file.contentType }));
+  let html;
+  let text = payload.body || '';
+  if (payload.html) {
+    const extracted = extractInlineImages(payload.html);
+    html = htmlDocument(extracted.html);
+    text = convert(extracted.html, { wordwrap: 78, selectors: [{ selector: 'img', format: 'skip' }] });
+    files.push(...extracted.inline);
+  }
   const mail = new MailComposer({
     from: senderHeader(account),
     to: payload.to,
     cc: payload.cc || undefined,
     bcc: payload.bcc || undefined,
     subject: payload.subject || '',
-    text: payload.body || '',
+    text,
+    html,
     inReplyTo: payload.inReplyTo || undefined,
     references: payload.references || undefined,
-    attachments: (payload.attachments || []).map((file) => ({ filename: file.filename, content: Buffer.from(file.content, 'base64'), contentType: file.contentType })),
+    attachments: files,
   });
   const compiled = mail.compile();
   compiled.keepBcc = false;
@@ -154,7 +183,58 @@ async function extractAttachment(raw, index) {
   return { filename: attachment.filename || `attachment-${index + 1}`, content: attachment.content };
 }
 
+const PRESETS = {
+  gmail: { provider: 'gmail', imapHost: 'imap.gmail.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecure: true },
+  outlook: { provider: 'outlook', imapHost: 'outlook.office365.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.office365.com', smtpPort: 587, smtpSecure: false, needsOAuth: true },
+  zoho: { provider: 'zoho', imapHost: 'imap.zoho.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.zoho.com', smtpPort: 465, smtpSecure: true },
+  zohoEu: { provider: 'zoho', imapHost: 'imap.zoho.eu', imapPort: 993, imapSecure: true, smtpHost: 'smtp.zoho.eu', smtpPort: 465, smtpSecure: true },
+  yahoo: { provider: 'custom', imapHost: 'imap.mail.yahoo.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.mail.yahoo.com', smtpPort: 465, smtpSecure: true },
+  icloud: { provider: 'custom', imapHost: 'imap.mail.me.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.mail.me.com', smtpPort: 587, smtpSecure: false },
+  godaddy: { provider: 'custom', imapHost: 'imap.secureserver.net', imapPort: 993, imapSecure: true, smtpHost: 'smtpout.secureserver.net', smtpPort: 465, smtpSecure: true },
+  hostinger: { provider: 'custom', imapHost: 'imap.hostinger.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.hostinger.com', smtpPort: 465, smtpSecure: true },
+};
+
+const DOMAINS = {
+  'gmail.com': 'gmail', 'googlemail.com': 'gmail', 'outlook.com': 'outlook', 'hotmail.com': 'outlook', 'live.com': 'outlook',
+  'msn.com': 'outlook', 'zoho.com': 'zoho', 'zohomail.com': 'zoho', 'zoho.eu': 'zohoEu', 'yahoo.com': 'yahoo', 'icloud.com': 'icloud',
+  'me.com': 'icloud', 'mac.com': 'icloud',
+};
+
+const MX_RULES = [
+  [/google(mail)?\.com\.?$/i, 'gmail'],
+  [/(protection\.outlook\.com|outlook\.com)\.?$/i, 'outlook'],
+  [/zoho\.eu\.?$/i, 'zohoEu'],
+  [/zoho\.com\.?$/i, 'zoho'],
+  [/secureserver\.net\.?$/i, 'godaddy'],
+  [/hostinger\.com\.?$/i, 'hostinger'],
+];
+
+/**
+ * Find IMAP/SMTP settings for an address using only DNS (MX and SRV records),
+ * so the address is never sent to a third-party lookup service.
+ */
+async function detectServers(email, resolver = dns) {
+  const domain = String(email).split('@')[1]?.toLowerCase().trim();
+  if (!domain) throw new Error('Email address is not valid.');
+  if (DOMAINS[domain]) return { ...PRESETS[DOMAINS[domain]], source: 'known' };
+  const mx = await resolver.resolveMx(domain).catch(() => []);
+  for (const record of mx) {
+    const rule = MX_RULES.find(([pattern]) => pattern.test(record.exchange));
+    if (rule) return { ...PRESETS[rule[1]], source: 'mx' };
+  }
+  const srv = async (name) => (await resolver.resolveSrv(`${name}.${domain}`).catch(() => []))
+    .sort((a, b) => a.priority - b.priority).find((r) => r.name && r.name !== '.');
+  const [imaps, submissions, submission] = await Promise.all([srv('_imaps._tcp'), srv('_submissions._tcp'), srv('_submission._tcp')]);
+  if (imaps && (submissions || submission)) {
+    const smtp = submissions || submission;
+    return { provider: 'custom', imapHost: imaps.name, imapPort: imaps.port, imapSecure: true, smtpHost: smtp.name, smtpPort: smtp.port, smtpSecure: Boolean(submissions), source: 'srv' };
+  }
+  return { provider: 'custom', imapHost: `mail.${domain}`, imapPort: 993, imapSecure: true, smtpHost: `mail.${domain}`, smtpPort: 465, smtpSecure: true, source: 'guess' };
+}
+
 module.exports = {
+  detectServers,
+  extractInlineImages,
   buildRawMessage,
   extractAttachment,
   imapConfig,

@@ -106,9 +106,9 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     }
   });
 
-  it('opens a message, caches it encrypted and marks it read on the server', async () => {
+  it('opens a conversation, caches it encrypted and marks it read on the server', async () => {
     const invoice = api.listMessages({ query: 'quarterly' }).messages[0];
-    const opened = await api.openMessage(invoice.id);
+    const { messages: [opened] } = await api.openThread(invoice.id);
     expect(opened.content.text).toContain('Confidential amount 98765');
     expect(opened.imagesTrusted).toBe(false);
     expect(db.getRaw(invoice.id)).not.toBeNull();
@@ -126,11 +126,30 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     expect(api.listMessages({}).total).toBe(3);
   });
 
-  it('sends only through the approval path, then stores a copy in Sent', async () => {
+  it('lets the user undo a send during the undo window', async () => {
     const account = api.state().accounts[0];
-    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Proposal', body: 'Here it is' });
+    api.updateSettings({ undoSeconds: 10 });
+    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Oops', html: '<p>not yet</p>' });
+    const { draft } = api.cancelSend(outboxId);
+    expect(draft.subject).toBe('Oops');
+    expect(draft.html).toBe('<p>not yet</p>');
+    expect(db.listOutbox().some((item) => item.id === outboxId)).toBe(false);
+    api.deleteDraft(draft.id);
+    api.updateSettings({ undoSeconds: 0 });
+    expect(servers.delivered).toHaveLength(0);
+  });
+
+  it('sends formatted mail with pasted images as inline attachments, then stores a copy in Sent', async () => {
+    const account = api.state().accounts[0];
+    const html = '<p dir="rtl">مرحباً <strong>بك</strong></p><p><img src="data:image/png;base64,iVBORw0KGgo="></p><div data-signature="true">— Tester</div>';
+    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Proposal', html });
     expect(servers.delivered).toHaveLength(1);
-    expect(servers.delivered[0].parsed.subject).toBe('Proposal');
+    const sent = servers.delivered[0].parsed;
+    expect(sent.subject).toBe('Proposal');
+    expect(sent.html).toContain('<strong>بك</strong>');
+    expect(sent.text).toContain('مرحباً بك');
+    expect(sent.attachments[0].contentDisposition).toBe('inline');
+    expect(sent.attachments[0].cid).toMatch(/^img-.+@emargy$/);
     expect(servers.delivered[0].envelope.rcptTo[0].address).toBe('partner@acme.test');
     expect(db.listOutbox().find((item) => item.id === outboxId).status).toBe('sent');
     await waitFor(() => servers.folder('Sent').messages.length === 1);
@@ -153,15 +172,76 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
 
   it('moves deleted messages to Trash on the server', async () => {
     const offer = api.listMessages({ query: 'weekend' }).messages[0];
-    await api.deleteMessage(offer.id);
-    expect(api.listMessages({ query: 'weekend' }).total).toBe(0);
+    await api.trash([offer.id]);
+    expect(api.listMessages({ query: 'weekend', folderRole: 'inbox' }).total).toBe(0);
     expect(servers.folder('Trash').messages.length).toBe(1);
+  });
+
+  it('groups a reply into the same conversation', async () => {
+    const client = new ImapFlow({ host: '127.0.0.1', port: servers.imapPort, secure: false, auth: { user: servers.user, pass: servers.password }, logger: false });
+    await client.connect();
+    await client.append('INBOX', ['From: boss@acme.test', `To: ${servers.user}`, 'Subject: Re: Urgent: contract', 'Message-ID: <m4@test.local>',
+      'In-Reply-To: <m3@test.local>', 'References: <m3@test.local>', '', 'Signed it'].join('\r\n'));
+    await client.logout();
+    await api.syncAccount(api.state().accounts[0].id);
+    const row = api.listMessages({ query: 'contract' }).messages[0];
+    expect(row.threadCount).toBe(2);
+    const { messages } = await api.openThread(row.id);
+    expect(messages.map((m) => m.content.text.trim())).toEqual(['Please sign', 'Signed it']);
+  });
+
+  it('flags and archives on the server', async () => {
+    const row = api.listMessages({ query: 'contract' }).messages[0];
+    const thread = db.threadMessages(row.id).map((m) => m.id);
+    await api.setFlagged(thread, true);
+    expect(api.listMessages({ filter: 'flagged' }).total).toBe(1);
+    await api.archive(thread);
+    expect(api.listMessages({ query: 'contract', folderRole: 'inbox' }).total).toBe(0);
+    await waitFor(() => servers.folder('Archive')?.messages.length === 2);
+  });
+
+  it('stores signatures encrypted and links them to accounts', async () => {
+    let state = api.saveSignature({ name: 'Work', html: '<p>Tarek · Emargy</p>' });
+    const signature = state.signatures[0];
+    state = await api.updateAccount(state.accounts[0].id, { signatureNew: signature.id, signatureReply: signature.id });
+    expect(state.accounts[0].signatureNew).toBe(signature.id);
+    state = api.deleteSignature(signature.id);
+    expect(state.signatures).toHaveLength(0);
+    expect(state.accounts[0].signatureNew).toBeNull();
+  });
+
+  it('suggests contacts from mail history', () => {
+    expect(api.contacts('acme').map((c) => c.address)).toContain('client@acme.test');
   });
 
   it('remembers trusted image senders without storing their address', () => {
     api.trustImages('client@acme.test');
     expect(db.isTrustedImageSender('CLIENT@acme.test')).toBe(true);
     expect(db.isTrustedImageSender('other@acme.test')).toBe(false);
+  });
+});
+
+describe('server auto-detection (DNS only)', () => {
+  const { detectServers } = require('../electron/mail.cjs');
+  const resolver = (mx = [], srv = {}) => ({
+    resolveMx: async () => mx,
+    resolveSrv: async (name) => srv[name] || [],
+  });
+
+  it('knows common providers without any lookup', async () => {
+    expect(await detectServers('me@gmail.com', resolver())).toMatchObject({ imapHost: 'imap.gmail.com', smtpPort: 465 });
+    expect(await detectServers('me@hotmail.com', resolver())).toMatchObject({ provider: 'outlook', needsOAuth: true });
+  });
+
+  it('recognises Google Workspace and Zoho from MX records', async () => {
+    expect(await detectServers('a@company.test', resolver([{ exchange: 'aspmx.l.google.com' }]))).toMatchObject({ provider: 'gmail', source: 'mx' });
+    expect(await detectServers('a@company.test', resolver([{ exchange: 'mx.zoho.eu' }]))).toMatchObject({ imapHost: 'imap.zoho.eu' });
+  });
+
+  it('uses SRV records, then falls back to mail.<domain>', async () => {
+    const srv = { '_imaps._tcp.host.test': [{ name: 'imap.host.test', port: 993, priority: 0 }], '_submission._tcp.host.test': [{ name: 'smtp.host.test', port: 587, priority: 0 }] };
+    expect(await detectServers('a@host.test', resolver([], srv))).toMatchObject({ imapHost: 'imap.host.test', smtpHost: 'smtp.host.test', smtpPort: 587, smtpSecure: false });
+    expect(await detectServers('a@other.test', resolver())).toMatchObject({ imapHost: 'mail.other.test', source: 'guess' });
   });
 });
 

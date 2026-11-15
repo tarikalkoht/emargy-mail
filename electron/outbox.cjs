@@ -28,6 +28,17 @@ class Outbox {
 
   stop() {
     clearInterval(this.timer);
+    for (const timer of this.scheduled || []) clearTimeout(timer);
+  }
+
+  /** Run the queue again after a delay (used for the undo-send window). */
+  schedule(delayMs) {
+    this.scheduled ||= new Set();
+    const timer = setTimeout(() => {
+      this.scheduled.delete(timer);
+      this.process().catch(() => {});
+    }, delayMs);
+    this.scheduled.add(timer);
   }
 
   async process() {
@@ -49,7 +60,6 @@ class Outbox {
       const result = await this.send(account, raw, item.envelope);
       this.db.updateOutbox(item.id, { status: 'sent', attempts: item.attempts + 1, nextAttemptAt: 0, sentAt: Date.now() });
       this.db.audit('message.sent', { outboxId: item.id, accountId: account.id, to: item.envelope.to, messageId: result.messageId });
-      if (item.draftId) this.db.deleteDraft(item.draftId);
       if (!providerSavesSentCopy(account)) {
         await this.sync.worker(account.id).appendSent(raw).catch((error) => this.db.audit('message.sent_copy_failed', { outboxId: item.id, error: error.message }));
       }

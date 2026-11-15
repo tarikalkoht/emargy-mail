@@ -3,7 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const AUDIT_LIMIT = 1000;
 
 const SCHEMA = `
@@ -60,10 +60,28 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, details BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS trusted_image_senders (fingerprint TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, data BLOB NOT NULL);
 `;
 
 function searchText(header) {
   return [header.subject, header.from, header.to, header.cc, header.preview].filter(Boolean).join(' ').toLowerCase();
+}
+
+const ADDRESS = /(?:"?([^"<,]*?)"?\s*)?<?([^\s<>,;"]+@[^\s<>,;"]+)>?/g;
+
+function parseAddressList(value = '') {
+  const result = [];
+  for (const match of String(value).matchAll(ADDRESS)) {
+    const address = match[2].toLowerCase();
+    const name = (match[1] || '').trim();
+    result.push({ name: name && name.toLowerCase() !== address ? name : '', address });
+  }
+  return result;
+}
+
+function threadRoot(header, id) {
+  const references = String(header.references || '').match(/<[^>]+>/g) || [];
+  return references[0] || header.inReplyTo || header.messageId || id;
 }
 
 class Database {
@@ -73,8 +91,16 @@ class Database {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;');
     this.db.exec(SCHEMA);
+    this.upgradeSchema();
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     this.loadHeaderCache();
+  }
+
+  upgradeSchema() {
+    const columns = (table) => new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+    if (!columns('folders').has('name')) this.db.exec('ALTER TABLE folders ADD COLUMN name TEXT');
+    if (!columns('messages').has('thread_key')) this.db.exec('ALTER TABLE messages ADD COLUMN thread_key TEXT');
+    this.db.exec('CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_key)');
   }
 
   close() {
@@ -171,14 +197,35 @@ class Database {
   }
 
   // Folders ------------------------------------------------------------------
-  upsertFolder(accountId, folderPath, role) {
-    this.db.prepare(`INSERT INTO folders (account_id, path, role) VALUES (?, ?, ?)
-      ON CONFLICT(account_id, path) DO UPDATE SET role = excluded.role`).run(accountId, folderPath, role);
+  upsertFolder(accountId, folderPath, role, name = folderPath) {
+    this.db.prepare(`INSERT INTO folders (account_id, path, role, name) VALUES (?, ?, ?, ?)
+      ON CONFLICT(account_id, path) DO UPDATE SET role = excluded.role, name = excluded.name`).run(accountId, folderPath, role, name);
     return this.db.prepare('SELECT * FROM folders WHERE account_id = ? AND path = ?').get(accountId, folderPath);
+  }
+
+  /** Remove folders that disappeared from the server (and their cached messages). */
+  pruneFolders(accountId, keepPaths) {
+    for (const folder of this.listFolders(accountId)) {
+      if (!keepPaths.has(folder.path)) {
+        this.resetFolder(folder.id);
+        this.db.prepare('DELETE FROM folders WHERE id = ?').run(folder.id);
+      }
+    }
   }
 
   listFolders(accountId) {
     return this.db.prepare('SELECT * FROM folders WHERE account_id = ? ORDER BY id').all(accountId);
+  }
+
+  listAllFolders() {
+    const unread = {};
+    const totals = {};
+    for (const message of this.sorted) {
+      totals[message.folderId] = (totals[message.folderId] || 0) + 1;
+      if (!message.read) unread[message.folderId] = (unread[message.folderId] || 0) + 1;
+    }
+    return this.db.prepare('SELECT id, account_id, path, role, name FROM folders ORDER BY account_id, id').all()
+      .map((f) => ({ id: f.id, accountId: f.account_id, path: f.path, role: f.role, name: f.name || f.path, unread: unread[f.id] || 0, total: totals[f.id] || 0 }));
   }
 
   getFolder(id) {
@@ -200,7 +247,7 @@ class Database {
   loadHeaderCache() {
     this.headers = new Map();
     const rows = this.db.prepare(`SELECT m.id, m.account_id, m.project_id, m.folder_id, m.uid, m.date, m.seen, m.flagged,
-      m.important, m.has_attachments, m.size, m.header, m.raw IS NOT NULL AS cached, f.role
+      m.important, m.has_attachments, m.size, m.header, m.thread_key, m.raw IS NOT NULL AS cached, f.role
       FROM messages m JOIN folders f ON f.id = m.folder_id`).all();
     for (const row of rows) this.cacheHeader(row);
     this.sortHeaders();
@@ -225,6 +272,7 @@ class Database {
       cached: Boolean(row.cached),
       ...header,
     };
+    entry.threadKey = row.thread_key || this.vault.fingerprint(threadRoot(header, row.id));
     entry.search = searchText(entry);
     this.headers.set(row.id, entry);
     return entry;
@@ -237,8 +285,8 @@ class Database {
   insertMessages(folder, messages) {
     if (!messages.length) return [];
     const insert = this.db.prepare(`INSERT OR IGNORE INTO messages
-      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, thread_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const added = [];
     this.transaction(() => {
       for (const message of messages) {
@@ -251,9 +299,10 @@ class Database {
           id, account_id: folder.account_id, project_id: message.projectId, folder_id: folder.id, uid: message.uid,
           date: message.dateValue, seen: message.read ? 1 : 0, flagged: message.flagged ? 1 : 0, important: message.important ? 1 : 0,
           has_attachments: message.hasAttachments ? 1 : 0, size: message.size || 0, header: this.vault.encryptJson(header),
+          thread_key: this.vault.fingerprint(threadRoot(header, id)),
         };
         const result = insert.run(row.id, row.account_id, row.project_id, row.folder_id, row.uid, row.date, row.seen, row.flagged,
-          row.important, row.has_attachments, row.size, row.header);
+          row.important, row.has_attachments, row.size, row.header, row.thread_key);
         if (result.changes) added.push(this.cacheHeader({ ...row, cached: 0, role: folder.role }));
       }
     });
@@ -327,21 +376,102 @@ class Database {
     return this.sorted.filter((m) => m.accountId === accountId && !m.cached && m.size < 5 * 1024 * 1024).slice(0, limit);
   }
 
-  listMessages({ projectId = 'all', accountId = 'all', folderRole = 'inbox', filter = 'all', query = '', offset = 0, limit = 200 } = {}) {
+  /**
+   * List conversations. A conversation appears once, represented by its newest
+   * message in the selected folder(s), with a count and unread/flag summary.
+   */
+  listMessages({ projectId = 'all', accountId = 'all', folderId = null, folderRole = 'inbox', filter = 'all', query = '', offset = 0, limit = 200, threaded = true } = {}) {
     const needle = String(query || '').trim().toLowerCase();
     const matches = this.sorted.filter((m) => {
-      if (m.folderRole !== folderRole) return false;
+      if (folderId ? m.folderId !== folderId : (needle ? ['trash', 'junk'].includes(m.folderRole) : m.folderRole !== folderRole)) return false;
       if (projectId !== 'all' && m.projectId !== projectId) return false;
       if (accountId !== 'all' && m.accountId !== accountId) return false;
       if (filter === 'unread' && m.read) return false;
       if (filter === 'important' && !m.important) return false;
       if (filter === 'flagged' && !m.flagged) return false;
+      if (filter === 'attachments' && !m.hasAttachments) return false;
       return !needle || m.search.includes(needle);
     });
+    let items = matches;
+    if (threaded) {
+      const threads = new Map();
+      for (const message of matches) {
+        const key = `${message.accountId}:${message.threadKey}`;
+        const thread = threads.get(key);
+        if (!thread) threads.set(key, { ...message, threadCount: 1, threadUnread: !message.read, threadFlagged: message.flagged });
+        else {
+          thread.threadCount += 1;
+          thread.threadUnread ||= !message.read;
+          thread.threadFlagged ||= message.flagged;
+        }
+      }
+      items = [...threads.values()];
+    }
     return {
-      total: matches.length,
-      messages: matches.slice(offset, offset + limit).map(({ search, dateValue, ...message }) => message),
+      total: items.length,
+      messages: items.slice(offset, offset + limit).map(({ search, dateValue, ...message }) => message),
     };
+  }
+
+  /** All messages of a conversation in one account, oldest first, across folders. */
+  threadMessages(id) {
+    const anchor = this.getMessage(id);
+    const excludeBin = !['trash', 'junk'].includes(anchor.folderRole);
+    const seen = new Set();
+    return this.sorted
+      .filter((m) => m.accountId === anchor.accountId && m.threadKey === anchor.threadKey && !(excludeBin && ['trash', 'junk'].includes(m.folderRole)))
+      .filter((m) => {
+        const key = m.messageId || m.id;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .reverse();
+  }
+
+  setFlagged(id, flagged) {
+    const header = this.getMessage(id);
+    this.db.prepare('UPDATE messages SET flagged = ? WHERE id = ?').run(flagged ? 1 : 0, id);
+    header.flagged = Boolean(flagged);
+  }
+
+  // Contacts (derived from synced headers; never stored separately) -------------
+  searchContacts(query, limit = 8) {
+    const needle = String(query || '').trim().toLowerCase();
+    if (!needle) return [];
+    const contacts = new Map();
+    for (const message of this.sorted) {
+      for (const field of [message.from, message.to, message.cc]) {
+        for (const contact of parseAddressList(field)) {
+          const entry = contacts.get(contact.address) || { address: contact.address, name: '', score: 0 };
+          entry.score += message.folderRole === 'sent' ? 3 : 1;
+          if (!entry.name && contact.name) entry.name = contact.name;
+          contacts.set(contact.address, entry);
+        }
+      }
+    }
+    return [...contacts.values()]
+      .filter((c) => c.address.includes(needle) || c.name.toLowerCase().includes(needle))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(({ address, name }) => ({ address, name }));
+  }
+
+  // Signatures -----------------------------------------------------------------
+  listSignatures() {
+    return this.db.prepare('SELECT id, created_at, data FROM signatures ORDER BY created_at').all()
+      .map((row) => ({ id: row.id, ...this.vault.decryptJson(row.data) }));
+  }
+
+  saveSignature({ id, name, html }) {
+    const signatureId = id || this.id();
+    this.db.prepare(`INSERT INTO signatures (id, created_at, data) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET data = excluded.data`).run(signatureId, Date.now(), this.vault.encryptJson({ name, html }));
+    return signatureId;
+  }
+
+  deleteSignature(id) {
+    this.db.prepare('DELETE FROM signatures WHERE id = ?').run(id);
   }
 
   unreadCounts() {
@@ -381,11 +511,10 @@ class Database {
   }
 
   // Outbox -------------------------------------------------------------------
-  enqueueOutbox(accountId, payload) {
+  enqueueOutbox(accountId, payload, sendAt = Date.now()) {
     const id = this.id();
-    const now = Date.now();
     this.db.prepare(`INSERT INTO outbox (id, account_id, status, attempts, next_attempt_at, created_at, data)
-      VALUES (?, ?, 'queued', 0, ?, ?, ?)`).run(id, accountId, now, now, this.vault.encryptJson(payload));
+      VALUES (?, ?, 'queued', 0, ?, ?, ?)`).run(id, accountId, sendAt, Date.now(), this.vault.encryptJson(payload));
     return id;
   }
 

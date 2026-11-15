@@ -128,24 +128,44 @@ function handle(channel, handler) {
 function registerHandlers() {
   handle('state:get', () => api.state());
   handle('settings:language', (language) => api.setLanguage(language));
+  handle('settings:update', (changes) => api.updateSettings(changes));
   handle('project:create', (input) => api.createProject(input));
   handle('project:delete', (id) => api.deleteProject(id));
+  handle('account:detect', (email) => api.detectServers(email));
   handle('account:add', (input) => api.addAccount(input));
+  handle('account:update', (id, changes) => api.updateAccount(id, changes));
   handle('account:delete', (id) => api.deleteAccount(id));
   handle('account:sync', (id) => api.syncAccount(id));
+  handle('folder:sync', (id) => api.syncFolder(id));
   handle('sync:all', () => api.syncAll());
   handle('messages:list', (params) => api.listMessages(params));
-  handle('message:open', (id) => api.openMessage(id));
-  handle('message:read', (id, read) => api.setRead(id, read));
-  handle('message:delete', (id) => api.deleteMessage(id));
+  handle('thread:open', (id) => api.openThread(id));
+  handle('messages:read', (ids, read) => api.setRead(ids, read));
+  handle('messages:flag', (ids, flagged) => api.setFlagged(ids, flagged));
+  handle('messages:archive', (ids) => api.archive(ids));
+  handle('messages:trash', (ids) => api.trash(ids));
+  handle('messages:move', (ids, folderId) => api.moveTo(ids, folderId));
   handle('images:trust', (address) => api.trustImages(address));
+  handle('contacts:search', (query) => api.contacts(query));
+  handle('signature:save', (input) => api.saveSignature(input));
+  handle('signature:delete', (id) => api.deleteSignature(id));
   handle('draft:save', (draft) => api.saveDraft(draft));
   handle('draft:get', (id) => api.getDraft(id));
   handle('draft:delete', (id) => api.deleteDraft(id));
-  handle('draft:approveSend', (draft) => api.approveAndSend(draft));
+  handle('draft:send', (draft) => api.approveAndSend(draft));
+  handle('send:undo', (id) => api.cancelSend(id));
   handle('outbox:retry', (id) => api.retryOutbox(id));
   handle('outbox:remove', (id) => api.removeOutbox(id));
   handle('audit:list', () => api.audit());
+
+  handle('compose:pickImage', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const file = result.filePaths[0];
+    if (fs.statSync(file).size > 5 * 1024 * 1024) throw new Error('Images must be smaller than 5 MB.');
+    const ext = path.extname(file).slice(1).toLowerCase().replace('jpg', 'jpeg');
+    return `data:image/${ext};base64,${fs.readFileSync(file).toString('base64')}`;
+  });
 
   handle('attachment:save', async ({ messageId, index }) => {
     const file = await api.attachment(messageId, index);
@@ -169,6 +189,7 @@ function registerHandlers() {
 
 function notifyNewMail({ newInbox = [] }) {
   if (!newInbox.length || !Notification.isSupported()) return;
+  if (db.getSetting('preferences', {}).notifications === false) return;
   const arabic = db.getSetting('language', 'en') === 'ar';
   new Notification({
     title: arabic ? `${newInbox.length} رسالة جديدة` : `${newInbox.length} new message${newInbox.length === 1 ? '' : 's'}`,

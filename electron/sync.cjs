@@ -27,14 +27,27 @@ class Semaphore {
   }
 }
 
+const SPECIAL_USE = {
+  '\\Inbox': 'inbox', '\\Sent': 'sent', '\\Trash': 'trash', '\\Junk': 'junk', '\\Drafts': 'drafts', '\\Archive': 'archive', '\\All': 'all',
+};
+
 function folderRole(folder) {
-  if (folder.specialUse === '\\Inbox' || folder.path.toUpperCase() === 'INBOX') return 'inbox';
-  if (folder.specialUse === '\\Sent') return 'sent';
-  if (folder.specialUse === '\\Trash') return 'trash';
-  if (folder.specialUse === '\\Junk') return 'junk';
-  if (/^(sent|sent items|sent messages|\[gmail\]\/sent mail)$/i.test(folder.path)) return 'sent';
-  if (/^(trash|deleted items|\[gmail\]\/trash|\[gmail\]\/bin)$/i.test(folder.path)) return 'trash';
-  return null;
+  if (folder.path.toUpperCase() === 'INBOX') return 'inbox';
+  if (SPECIAL_USE[folder.specialUse]) return SPECIAL_USE[folder.specialUse];
+  const name = folder.path.replace(/^inbox[./]/i, '');
+  if (/^(sent|sent items|sent messages|sent mail|\[gmail\]\/sent mail)$/i.test(name)) return 'sent';
+  if (/^(trash|deleted|deleted items|deleted messages|bin|\[gmail\]\/trash|\[gmail\]\/bin)$/i.test(name)) return 'trash';
+  if (/^(junk|spam|junk e-mail|bulk mail|\[gmail\]\/spam)$/i.test(name)) return 'junk';
+  if (/^(drafts|\[gmail\]\/drafts)$/i.test(name)) return 'drafts';
+  if (/^(archive|archives)$/i.test(name)) return 'archive';
+  return 'custom';
+}
+
+function parseReferences(headers) {
+  if (!headers) return '';
+  const text = headers.toString('utf8').replace(/\r?\n[ \t]+/g, ' ');
+  const match = text.match(/^references:\s*(.*)$/im);
+  return match ? match[1].trim() : '';
 }
 
 class AccountWorker {
@@ -112,34 +125,49 @@ class AccountWorker {
     this.reconnectTimer = setTimeout(() => this.syncNow().catch(() => {}), delay);
   }
 
-  scheduleSync(roles) {
+  scheduleSync(targets) {
+    this.pendingTargets = new Set([...(this.pendingTargets || []), ...targets]);
     clearTimeout(this.syncTimer);
-    this.syncTimer = setTimeout(() => this.syncNow(roles).catch(() => {}), 400);
+    this.syncTimer = setTimeout(() => {
+      const next = [...this.pendingTargets];
+      this.pendingTargets = new Set();
+      this.syncNow(next).catch(() => {});
+    }, 400);
   }
 
   async discoverFolders(client) {
     const folders = await client.list();
-    const seen = new Set();
+    const keep = new Set();
+    const roles = new Set();
     for (const folder of folders) {
-      const role = folderRole(folder);
-      if (!role || seen.has(role)) continue;
-      seen.add(role);
-      this.db.upsertFolder(this.accountId, folder.path, role);
+      if (folder.flags?.has('\\Noselect') || folder.flags?.has('\\NonExistent')) continue;
+      let role = folderRole(folder);
+      // Only one folder per special role; extra matches are shown as normal folders.
+      if (role !== 'custom' && roles.has(role)) role = 'custom';
+      roles.add(role);
+      keep.add(folder.path);
+      this.db.upsertFolder(this.accountId, folder.path, role, folder.path.toUpperCase() === 'INBOX' ? 'Inbox' : folder.name);
     }
-    if (!seen.has('inbox')) this.db.upsertFolder(this.accountId, 'INBOX', 'inbox');
+    if (!roles.has('inbox')) {
+      keep.add('INBOX');
+      this.db.upsertFolder(this.accountId, 'INBOX', 'inbox', 'Inbox');
+    }
+    this.db.pruneFolders(this.accountId, keep);
   }
 
   folder(role) {
     return this.db.listFolders(this.accountId).find((folder) => folder.role === role);
   }
 
-  syncNow(roles = ['inbox', 'sent']) {
+  /** targets: folder roles ('inbox', 'sent', …) or folder ids. */
+  syncNow(targets = ['inbox', 'sent']) {
     return this.run(async (client) => {
       this.setStatus('syncing');
       const account = this.db.getAccount(this.accountId);
       let added = [];
-      for (const role of roles) {
-        const folder = this.folder(role);
+      const folders = this.db.listFolders(this.accountId);
+      for (const target of targets) {
+        const folder = folders.find((f) => (typeof target === 'number' ? f.id === target : f.role === target));
         if (folder) added = added.concat(await this.syncFolder(client, folder, account));
       }
       await this.prefetchBodies(client);
@@ -174,13 +202,14 @@ class AccountWorker {
       }
 
       const fetched = [];
-      const query = { uid: true, envelope: true, flags: true, size: true, bodyStructure: true };
+      const query = { uid: true, envelope: true, flags: true, size: true, bodyStructure: true, headers: ['references'] };
+      const summarize = (item) => ({ ...summarizeFetched(item, account), references: parseReferences(item.headers) });
       if (!folder.last_uid) {
         const start = Math.max(1, mailbox.exists - INITIAL_WINDOW + 1);
-        for await (const item of client.fetch(`${start}:*`, query)) fetched.push(summarizeFetched(item, account));
+        for await (const item of client.fetch(`${start}:*`, query)) fetched.push(summarize(item));
       } else {
         for await (const item of client.fetch(`${folder.last_uid + 1}:*`, query, { uid: true })) {
-          if (item.uid > folder.last_uid) fetched.push(summarizeFetched(item, account));
+          if (item.uid > folder.last_uid) fetched.push(summarize(item));
         }
       }
       const added = this.db.insertMessages(folder, fetched);
@@ -255,6 +284,19 @@ class AccountWorker {
     });
   }
 
+  setFlagged(message, flagged) {
+    return this.run(async (client) => {
+      const folder = this.db.getFolder(message.folderId);
+      const lock = await client.getMailboxLock(folder.path);
+      try {
+        if (flagged) await client.messageFlagsAdd(String(message.uid), ['\\Flagged'], { uid: true });
+        else await client.messageFlagsRemove(String(message.uid), ['\\Flagged'], { uid: true });
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   moveToTrash(message) {
     return this.run(async (client) => {
       const folder = this.db.getFolder(message.folderId);
@@ -266,6 +308,42 @@ class AccountWorker {
       } finally {
         lock.release();
       }
+      if (trash && trash.id !== folder.id) this.scheduleSync([trash.id]);
+    });
+  }
+
+  /** Archive: Archive folder, else Gmail "All Mail", else create an "Archive" folder. */
+  archive(message) {
+    return this.run(async (client) => {
+      const folder = this.db.getFolder(message.folderId);
+      let target = this.folder('archive') || this.folder('all');
+      if (!target) {
+        await client.mailboxCreate('Archive').catch(() => {});
+        await this.discoverFolders(client);
+        target = this.folder('archive') || this.db.listFolders(this.accountId).find((f) => f.path === 'Archive');
+      }
+      if (!target || target.id === folder.id) return;
+      const lock = await client.getMailboxLock(folder.path);
+      try {
+        await client.messageMove(String(message.uid), target.path, { uid: true });
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  moveTo(message, folderId) {
+    return this.run(async (client) => {
+      const folder = this.db.getFolder(message.folderId);
+      const target = this.db.getFolder(folderId);
+      if (!target || target.account_id !== this.accountId || target.id === folder.id) throw new Error('Choose another folder in the same account.');
+      const lock = await client.getMailboxLock(folder.path);
+      try {
+        await client.messageMove(String(message.uid), target.path, { uid: true });
+      } finally {
+        lock.release();
+      }
+      this.scheduleSync([target.id]);
     });
   }
 
