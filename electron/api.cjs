@@ -226,11 +226,12 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       const draft = sanitizeDraft(input || {});
       if (!draft.to) throw new Error('Add at least one recipient.');
       const account = db.getAccount(draft.accountId);
-      const saved = db.saveDraft(draft);
       const { raw, envelope, messageId } = await buildRawMessage(account, draft);
       const outboxId = db.enqueueOutbox(account.id, {
-        draftId: saved.id, to: draft.to, subject: draft.subject, messageId, envelope, raw: raw.toString('base64'),
+        to: draft.to, subject: draft.subject, messageId, envelope, raw: raw.toString('base64'),
       });
+      // The approved message now lives (encrypted) in the outbox until it is delivered.
+      if (draft.id) db.deleteDraft(draft.id);
       db.audit('message.approved_by_user', { outboxId, accountId: account.id, to: draft.to, subject: draft.subject });
       await outbox.process();
       return { state: api.state(), outboxId };

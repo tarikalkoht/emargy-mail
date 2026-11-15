@@ -1,6 +1,6 @@
 {
   "name": "emargy-mail",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Open-source, local-first email client for multiple projects and accounts.",
   "main": "electron/main.cjs",
   "author": "Emargy contributors",
@@ -11,6 +11,8 @@
     "build": "vite build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:app": "npm run build && node scripts/e2e-app.cjs",
+    "demo:server": "node scripts/demo-mail-server.cjs",
     "dist:win": "npm run test && npm run build && electron-builder --win nsis portable"
   },
   "build": {
@@ -32,7 +34,11 @@
       ],
       "artifactName": "Emargy-Mail-${version}-${arch}.${ext}"
     },
+    "portable": {
+      "artifactName": "Emargy-Mail-Portable-${version}.${ext}"
+    },
     "nsis": {
+      "artifactName": "Emargy-Mail-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
@@ -55,6 +61,7 @@
     "electron-builder": "^26.18.0",
     "hoodiecrow-imap": "^3.3.1",
     "jsdom": "^31.0.1",
+    "playwright-core": "^1.65.1",
     "smtp-server": "^3.21.5",
     "vite": "^8.3.8",
     "vitest": "^5.1.0",

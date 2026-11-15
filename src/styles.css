@@ -1,7 +1,6 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap');
-
+/* System fonts only: the app never contacts a font service. */
 :root {
-  font-family: Inter, 'Noto Sans Arabic', system-ui, sans-serif;
+  font-family: 'Segoe UI', 'Segoe UI Variable', Tahoma, 'Noto Sans Arabic', system-ui, sans-serif;
   color: #e9f0fa;
   background: #07111f;
   font-synthesis: none;
@@ -110,7 +109,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .sender-block span, .sender-block time { color: var(--muted); font-size: 10px; }
 .message-content { min-height: 0; flex: 1; overflow: hidden; background: #f5f7f9; margin: 18px 20px 10px; border-radius: 12px; box-shadow: 0 15px 40px rgba(0,0,0,.18); }
 .message-content iframe { border: 0; width: 100%; height: 100%; background: white; }
-.message-content pre { margin: 0; padding: 28px; height: 100%; overflow: auto; white-space: pre-wrap; font: 13px/1.7 Inter, sans-serif; color: #202733; }
+.message-content pre { margin: 0; padding: 28px; height: 100%; overflow: auto; white-space: pre-wrap; font: 13px/1.7 'Segoe UI', Tahoma, sans-serif; color: #202733; }
 .attachments { flex: 0 0 auto; padding: 12px 20px 18px; }
 .attachments h3 { margin: 0 0 9px; color: var(--muted); display: flex; align-items: center; gap: 7px; font-size: 11px; }
 .attachment-grid { display: flex; gap: 8px; overflow-x: auto; }
@@ -154,7 +153,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .compose-row.compact { grid-template-columns: 70px minmax(0,1fr) 70px minmax(0,1fr); gap: 8px; }
 .compose-row > span { color: var(--muted); font-size: 10px; }
 .compose-row input, .compose-row select { border: 0; background: transparent; height: 38px; border-radius: 0; }
-.compose-body { flex: 1; min-height: 300px; resize: none; border: 0; outline: 0; background: #f8fafc; color: #1f2937; padding: 24px; font: 13px/1.7 Inter, 'Noto Sans Arabic', sans-serif; }
+.compose-body { flex: 1; min-height: 300px; resize: none; border: 0; outline: 0; background: #f8fafc; color: #1f2937; padding: 24px; font: 13px/1.7 'Segoe UI', Tahoma, 'Noto Sans Arabic', sans-serif; }
 .compose-footer { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--border); }
 .ai-policy { color: #758da7; font-size: 9px; display: flex; align-items: center; gap: 7px; }.ai-policy svg { color: #9c85ff; }.button-row { display: flex; gap: 8px; }
 
@@ -180,3 +179,50 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .global-search { margin-inline: 12px; }
 }
 
+
+/* ---- Secure core additions ---- */
+.main-nav i { width: 20px; }
+.version { display: inline-flex; align-items: center; gap: 3px; }
+.icon-button.danger:hover { color: var(--danger); border-color: rgba(255,100,118,.4); }
+.icon-button:disabled { opacity: .45; cursor: not-allowed; }
+.reader-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reader-actions { display: flex; gap: 6px; }
+.privacy-banner { margin: 14px 20px 0; padding: 9px 12px; display: flex; align-items: center; gap: 10px; font-size: 11px; color: #ffd89a; background: rgba(255,186,74,.08); border: 1px solid rgba(255,186,74,.22); border-radius: 10px; }
+.privacy-banner span { flex: 1; line-height: 1.5; }
+.privacy-banner button { border: 1px solid rgba(255,186,74,.3); background: transparent; color: #ffd89a; border-radius: 7px; padding: 5px 9px; font-size: 10px; cursor: pointer; white-space: nowrap; }
+.privacy-banner button:hover { background: rgba(255,186,74,.12); }
+.compose-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; border-top: 1px solid var(--border); }
+.compose-attachments span { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 8px; font-size: 11px; color: var(--text); background: var(--surface-2); }
+.compose-attachments small { color: var(--muted); }
+.compose-attachments button { border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+.load-more { width: 100%; height: 44px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--accent-2); cursor: pointer; font-size: 12px; }
+.load-more:hover { background: rgba(45,140,255,.06); }
+.account-count { min-width: 18px; height: 18px; border-radius: 9px; display: grid; place-items: center; font-size: 9px; color: var(--accent-2); background: rgba(45,140,255,.12); }
+.account-icon.status-syncing, .account-icon.status-connecting { color: var(--warning); background: rgba(255,186,74,.1); }
+.account-icon.status-error, .account-icon.status-offline { color: var(--danger); background: rgba(255,100,118,.1); }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--success); flex: 0 0 auto; }
+.status-dot.status-syncing, .status-dot.status-connecting { background: var(--warning); }
+.status-dot.status-error, .status-dot.status-offline { background: var(--danger); }
+.settings-grid { margin-top: 20px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.settings-card { border: 1px solid var(--border); background: var(--surface); border-radius: 14px; padding: 18px; }
+.settings-card h3 { margin: 0 0 12px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.settings-card h3.spaced { margin-top: 22px; }
+.security-card { background: linear-gradient(160deg, rgba(48,200,148,.08), var(--surface)); border-color: rgba(48,200,148,.2); }
+.security-card h3 svg { color: var(--success); }
+.security-card ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.security-card li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; font-size: 12px; line-height: 1.6; color: #c9d6e5; }
+.security-card li svg { color: var(--success); margin-top: 3px; }
+.settings-row { display: grid; grid-template-columns: 12px minmax(0,1fr) 34px; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.settings-row:last-child { border-bottom: 0; }
+.settings-row strong, .settings-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-row strong { font-size: 12px; }
+.settings-row small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.muted { color: var(--muted); font-size: 12px; }
+.field-help { color: #657d98; font-size: 10px; line-height: 1.5; margin-top: -6px; }
+.draft-card { cursor: default; }
+.draft-open { border: 0; background: transparent; color: inherit; text-align: start; cursor: pointer; padding: 0; min-width: 0; }
+.row-actions { display: flex; align-items: center; gap: 6px; }
+.audit-row.outbox-failed .audit-icon { color: var(--danger); background: rgba(255,100,118,.1); }
+.audit-row.outbox-queued .audit-icon, .audit-row.outbox-sending .audit-icon { color: var(--warning); background: rgba(255,186,74,.1); }
+.toast.warning { border-color: rgba(255,186,74,.3); background: #2d2412; color: #ffdca3; }
+.message-subject svg + svg { color: var(--muted); }

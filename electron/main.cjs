@@ -8,7 +8,7 @@ const { Outbox } = require('./outbox.cjs');
 const { createApi } = require('./api.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
 
-const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged ? 'http://127.0.0.1:5173' : null);
+const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged && !process.env.EMARGY_USE_DIST ? 'http://127.0.0.1:5173' : null);
 const SAFE_EXTERNAL = new Set(['https:', 'http:', 'mailto:']);
 const MAX_PICKED_FILE = 20 * 1024 * 1024;
 
@@ -17,6 +17,9 @@ let db;
 let sync;
 let outbox;
 let api;
+
+// A separate data folder for demos and automated tests, so real data is never touched.
+if (process.env.EMARGY_DATA_DIR) app.setPath('userData', path.resolve(process.env.EMARGY_DATA_DIR));
 
 app.enableSandbox();
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -185,11 +188,16 @@ function openStorage() {
     unprotect: (data) => Buffer.from(safeStorage.decryptString(data), 'base64'),
   });
   db = new Database({ file: path.join(dataDir, 'emargy.db'), vault });
-  migrateLegacyStore({
-    db,
-    legacyFile: path.join(dataDir, 'emargy-mail.json'),
-    decryptLegacySecret: (secret) => (secret ? safeStorage.decryptString(Buffer.from(secret, 'base64')) : ''),
-  });
+  // The prototype stored data in a plaintext JSON file (in a differently named folder when run from source).
+  const legacyFiles = new Set([path.join(dataDir, 'emargy-mail.json')]);
+  if (!process.env.EMARGY_DATA_DIR) legacyFiles.add(path.join(app.getPath('appData'), 'emargy-mail', 'emargy-mail.json'));
+  for (const legacyFile of legacyFiles) {
+    migrateLegacyStore({
+      db,
+      legacyFile,
+      decryptLegacySecret: (secret) => (secret ? safeStorage.decryptString(Buffer.from(secret, 'base64')) : ''),
+    });
+  }
 }
 
 app.on('second-instance', () => {

@@ -20,7 +20,7 @@ async function startMailServers({ imapPort = 0, smtpPort = 0, user = 'tester@ema
   const imap = hoodiecrow({
     plugins: ['ID', 'IDLE', 'UIDPLUS', 'SPECIAL-USE', 'ENABLE', 'CONDSTORE', 'LITERALPLUS', 'MOVE'],
     storage: {
-      INBOX: { messages: seed.map((message) => ({ raw: rawMessage(message), flags: message.flags || [] })) },
+      INBOX: { messages: seed.map((message) => ({ raw: message.raw || rawMessage(message), flags: message.flags || [] })) },
       '': {
         separator: '/',
         folders: {
