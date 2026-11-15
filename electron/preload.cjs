@@ -1,23 +1,39 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('emargy', {
-  getState: () => ipcRenderer.invoke('state:get'),
-  setLanguage: (language) => ipcRenderer.invoke('settings:language', language),
-  createProject: (input) => ipcRenderer.invoke('project:create', input),
-  deleteProject: (id) => ipcRenderer.invoke('project:delete', id),
-  addAccount: (input) => ipcRenderer.invoke('account:add', input),
-  deleteAccount: (id) => ipcRenderer.invoke('account:delete', id),
-  syncAccount: (id) => ipcRenderer.invoke('account:sync', id),
-  getMessage: (id) => ipcRenderer.invoke('message:get', id),
-  markRead: (id, read) => ipcRenderer.invoke('message:read', { id, read }),
-  saveDraft: (draft) => ipcRenderer.invoke('draft:save', draft),
-  deleteDraft: (id) => ipcRenderer.invoke('draft:delete', id),
-  sendDraft: (id) => ipcRenderer.invoke('draft:send', id),
-  saveAttachment: (attachment) => ipcRenderer.invoke('attachment:save', attachment),
-  onSyncStatus: (callback) => {
-    const listener = (_event, value) => callback(value);
-    ipcRenderer.on('sync:status', listener);
-    return () => ipcRenderer.removeListener('sync:status', listener);
-  },
-});
+const invoke = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
 
+function subscribe(channel) {
+  return (callback) => {
+    const listener = (_event, value) => callback(value);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  };
+}
+
+contextBridge.exposeInMainWorld('emargy', {
+  getState: invoke('state:get'),
+  setLanguage: invoke('settings:language'),
+  createProject: invoke('project:create'),
+  deleteProject: invoke('project:delete'),
+  addAccount: invoke('account:add'),
+  deleteAccount: invoke('account:delete'),
+  syncAccount: invoke('account:sync'),
+  syncAll: invoke('sync:all'),
+  listMessages: invoke('messages:list'),
+  openMessage: invoke('message:open'),
+  markRead: invoke('message:read'),
+  deleteMessage: invoke('message:delete'),
+  trustImages: invoke('images:trust'),
+  saveDraft: invoke('draft:save'),
+  getDraft: invoke('draft:get'),
+  deleteDraft: invoke('draft:delete'),
+  approveAndSend: invoke('draft:approveSend'),
+  retryOutbox: invoke('outbox:retry'),
+  removeOutbox: invoke('outbox:remove'),
+  listAudit: invoke('audit:list'),
+  saveAttachment: invoke('attachment:save'),
+  pickFiles: invoke('compose:pickFiles'),
+  onSyncStatus: subscribe('sync:status'),
+  onMailChanged: subscribe('mail:changed'),
+  onOutboxChanged: subscribe('outbox:changed'),
+});

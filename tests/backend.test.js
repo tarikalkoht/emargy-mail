@@ -1,0 +1,204 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { ImapFlow } = require('imapflow');
+const { Vault } = require('../electron/vault.cjs');
+const { Database } = require('../electron/db.cjs');
+const { SyncManager } = require('../electron/sync.cjs');
+const { Outbox } = require('../electron/outbox.cjs');
+const { createApi } = require('../electron/api.cjs');
+const { migrateLegacyStore } = require('../electron/migrate.cjs');
+const { startMailServers, rawMessage } = require('./helpers/mailServers.cjs');
+
+// Stand-in for Windows DPAPI: reversible, but proves the key file never holds the raw key.
+const protect = (key) => Buffer.from(key.map((byte) => byte ^ 0x5a));
+const unprotect = (data) => Buffer.from(data.map((byte) => byte ^ 0x5a));
+
+const waitFor = async (check, timeout = 8000) => {
+  const start = Date.now();
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() - start > timeout) throw new Error('Timed out waiting for condition.');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+};
+
+describe('encrypted storage, sync and outbox against local mail servers', () => {
+  let dir;
+  let servers;
+  let db;
+  let sync;
+  let outbox;
+  let api;
+  const events = [];
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emargy-test-'));
+    servers = await startMailServers({
+      seed: [
+        { from: 'Client <client@acme.test>', to: 'tester@emargy.test', subject: 'Secret quarterly invoice', body: 'Confidential amount 98765', id: 'm1' },
+        { from: 'news@shop.test', to: 'tester@emargy.test', subject: 'Weekend offers', body: 'Hello there', id: 'm2', flags: ['\\Seen'] },
+      ],
+    });
+    const vault = new Vault({ keyFile: path.join(dir, 'vault.key'), protect, unprotect });
+    db = new Database({ file: path.join(dir, 'emargy.db'), vault });
+    const emit = (channel, payload) => events.push({ channel, payload });
+    sync = new SyncManager({ db, emit });
+    outbox = new Outbox({ db, sync, emit });
+    api = createApi({ db, sync, outbox, emit });
+  });
+
+  afterAll(async () => {
+    outbox?.stop();
+    await sync?.stop();
+    db?.close();
+    await servers?.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const accountInput = (overrides = {}) => ({
+    projectId: api.state().projects[0].id,
+    provider: 'custom',
+    displayName: 'Tester',
+    email: servers.user,
+    password: servers.password,
+    imapHost: '127.0.0.1',
+    imapPort: servers.imapPort,
+    imapSecure: false,
+    smtpHost: '127.0.0.1',
+    smtpPort: servers.smtpPort,
+    smtpSecure: false,
+    ...overrides,
+  });
+
+  it('rejects an account with a wrong password before saving it', async () => {
+    api.createProject({ name: 'Acme', color: '#15b886' });
+    await expect(api.addAccount(accountInput({ password: 'wrong' }))).rejects.toThrow(/IMAP login failed/);
+    expect(api.state().accounts).toHaveLength(0);
+  });
+
+  it('adds an account and synchronizes the inbox', async () => {
+    const state = await api.addAccount(accountInput());
+    expect(state.accounts).toHaveLength(1);
+    expect(state.accounts[0].password).toBeUndefined();
+    const accountId = state.accounts[0].id;
+    await api.syncAccount(accountId);
+    const { messages, total } = api.listMessages({ folderRole: 'inbox' });
+    expect(total).toBe(2);
+    expect(messages[0]).toMatchObject({ accountId, projectId: state.projects[0].id });
+    const invoice = messages.find((m) => m.subject === 'Secret quarterly invoice');
+    expect(invoice.read).toBe(false);
+    expect(invoice.important).toBe(true);
+    expect(api.state().counts.total).toBe(1);
+  });
+
+  it('never writes mail content, addresses or passwords to disk in clear text', async () => {
+    db.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const files = fs.readdirSync(dir).map((file) => fs.readFileSync(path.join(dir, file)));
+    const everything = Buffer.concat(files).toString('latin1');
+    for (const secret of ['Secret quarterly', 'Confidential amount', 'client@acme.test', servers.password, 'Acme', 'tester@emargy.test']) {
+      expect(everything.includes(secret), `found "${secret}" on disk`).toBe(false);
+    }
+  });
+
+  it('opens a message, caches it encrypted and marks it read on the server', async () => {
+    const invoice = api.listMessages({ query: 'quarterly' }).messages[0];
+    const opened = await api.openMessage(invoice.id);
+    expect(opened.content.text).toContain('Confidential amount 98765');
+    expect(opened.imagesTrusted).toBe(false);
+    expect(db.getRaw(invoice.id)).not.toBeNull();
+    await waitFor(() => servers.folder('INBOX').messages.find((m) => m.uid === invoice.uid)?.flags.includes('\\Seen'));
+  });
+
+  it('receives new mail instantly through IMAP IDLE', async () => {
+    const before = events.filter((e) => e.channel === 'mail:changed').length;
+    const client = new ImapFlow({ host: '127.0.0.1', port: servers.imapPort, secure: false, auth: { user: servers.user, pass: servers.password }, logger: false });
+    await client.connect();
+    await client.append('INBOX', rawMessage({ from: 'boss@acme.test', to: servers.user, subject: 'Urgent: contract', body: 'Please sign', id: 'm3' }));
+    await client.logout();
+    const event = await waitFor(() => events.filter((e) => e.channel === 'mail:changed').slice(before).find((e) => e.payload.newInbox.length));
+    expect(event.payload.newInbox[0].subject).toBe('Urgent: contract');
+    expect(api.listMessages({}).total).toBe(3);
+  });
+
+  it('sends only through the approval path, then stores a copy in Sent', async () => {
+    const account = api.state().accounts[0];
+    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Proposal', body: 'Here it is' });
+    expect(servers.delivered).toHaveLength(1);
+    expect(servers.delivered[0].parsed.subject).toBe('Proposal');
+    expect(servers.delivered[0].envelope.rcptTo[0].address).toBe('partner@acme.test');
+    expect(db.listOutbox().find((item) => item.id === outboxId).status).toBe('sent');
+    await waitFor(() => servers.folder('Sent').messages.length === 1);
+    expect(db.listAudit().some((entry) => entry.action === 'message.approved_by_user')).toBe(true);
+    expect(api.state().drafts).toHaveLength(0);
+  });
+
+  it('keeps a message in the outbox and schedules a retry when sending fails', async () => {
+    const account = api.state().accounts[0];
+    const smtpPort = servers.smtpPort;
+    await new Promise((resolve) => servers.smtp.close(resolve));
+    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Offline test', body: 'x' });
+    const item = db.listOutbox().find((entry) => entry.id === outboxId);
+    expect(item.status).toBe('queued');
+    expect(item.attempts).toBe(1);
+    expect(item.lastError).toBeTruthy();
+    expect(item.nextAttemptAt).toBeGreaterThan(Date.now());
+    expect(smtpPort).toBeGreaterThan(0);
+  });
+
+  it('moves deleted messages to Trash on the server', async () => {
+    const offer = api.listMessages({ query: 'weekend' }).messages[0];
+    await api.deleteMessage(offer.id);
+    expect(api.listMessages({ query: 'weekend' }).total).toBe(0);
+    expect(servers.folder('Trash').messages.length).toBe(1);
+  });
+
+  it('remembers trusted image senders without storing their address', () => {
+    api.trustImages('client@acme.test');
+    expect(db.isTrustedImageSender('CLIENT@acme.test')).toBe(true);
+    expect(db.isTrustedImageSender('other@acme.test')).toBe(false);
+  });
+});
+
+describe('vault', () => {
+  it('refuses to decrypt data that was tampered with', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emargy-vault-'));
+    const vault = new Vault({ keyFile: path.join(dir, 'vault.key'), protect, unprotect });
+    const blob = vault.encrypt('hello');
+    expect(vault.decryptText(blob)).toBe('hello');
+    blob[blob.length - 1] ^= 1;
+    expect(() => vault.decrypt(blob)).toThrow();
+    const reopened = new Vault({ keyFile: path.join(dir, 'vault.key'), protect, unprotect });
+    expect(reopened.decryptText(vault.encrypt('same key'))).toBe('same key');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('legacy prototype migration', () => {
+  it('imports projects, accounts and drafts, then wipes the plaintext file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emargy-migrate-'));
+    const legacyFile = path.join(dir, 'emargy-mail.json');
+    fs.writeFileSync(legacyFile, JSON.stringify({
+      language: 'ar',
+      projects: [{ id: 'p1', name: 'Old project', color: '#ff6b4a', createdAt: '2026-11-01T00:00:00Z' }],
+      accounts: [{ id: 'a1', projectId: 'p1', email: 'old@x.test', imapHost: 'imap.x.test', smtpHost: 'smtp.x.test', encryptedPassword: 'c2VjcmV0' }],
+      messages: [{ id: 'a1:1', subject: 'plaintext body' }],
+      drafts: [{ id: 'd1', accountId: 'a1', to: 'x@y.test', subject: 'Hi', body: 'draft', status: 'draft' }],
+    }));
+    const vault = new Vault({ keyFile: path.join(dir, 'vault.key'), protect, unprotect });
+    const db = new Database({ file: path.join(dir, 'emargy.db'), vault });
+    const result = migrateLegacyStore({ db, legacyFile, decryptLegacySecret: (s) => Buffer.from(s, 'base64').toString() });
+    expect(result).toEqual({ migrated: true, accounts: 1 });
+    expect(fs.existsSync(legacyFile)).toBe(false);
+    expect(db.getSetting('language')).toBe('ar');
+    expect(db.getAccount('a1', { withSecrets: true }).password).toBe('secret');
+    expect(db.listDrafts()[0].subject).toBe('Hi');
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

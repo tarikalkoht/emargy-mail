@@ -1,11 +1,75 @@
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, dialog, ipcMain, Notification } = require('electron');
-const { Store } = require('./store.cjs');
-const { fetchMessage, sendMessage, syncInbox } = require('./mail.cjs');
+const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, safeStorage, session, shell } = require('electron');
+const { Vault } = require('./vault.cjs');
+const { Database } = require('./db.cjs');
+const { SyncManager } = require('./sync.cjs');
+const { Outbox } = require('./outbox.cjs');
+const { createApi } = require('./api.cjs');
+const { migrateLegacyStore } = require('./migrate.cjs');
+
+const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged ? 'http://127.0.0.1:5173' : null);
+const SAFE_EXTERNAL = new Set(['https:', 'http:', 'mailto:']);
+const MAX_PICKED_FILE = 20 * 1024 * 1024;
 
 let mainWindow;
-let store;
+let db;
+let sync;
+let outbox;
+let api;
+
+app.enableSandbox();
+if (!app.requestSingleInstanceLock()) app.quit();
+
+function emit(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+function isAppUrl(url) {
+  if (!url) return false;
+  if (DEV_URL && url.startsWith(DEV_URL)) return true;
+  return url.startsWith('file://');
+}
+
+async function openExternalSafely(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (!SAFE_EXTERNAL.has(parsed.protocol)) return;
+  const target = parsed.protocol === 'mailto:' ? parsed.href : `${parsed.protocol}//${parsed.host}${parsed.pathname}${parsed.search}`;
+  const arabic = db?.getSetting('language', 'en') === 'ar';
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: arabic ? ['فتح الرابط', 'إلغاء'] : ['Open link', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    title: arabic ? 'فتح رابط خارجي' : 'Open external link',
+    message: arabic ? `هل تريد فتح هذا الرابط في المتصفح؟\n\nالموقع: ${parsed.host || parsed.href}` : `Open this link in your browser?\n\nSite: ${parsed.host || parsed.href}`,
+    detail: target.slice(0, 600),
+    noLink: true,
+  });
+  if (response === 0) await shell.openExternal(parsed.href);
+}
+
+function hardenSession() {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  ses.setPermissionCheckHandler(() => false);
+  ses.on('will-download', (event) => event.preventDefault());
+  // The interface never talks to the internet. The only remote requests allowed
+  // are images inside an email the user chose to show (the email frame's own CSP
+  // blocks them otherwise). Mail traffic happens in the main process, not here.
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    const { url, resourceType } = details;
+    if (isAppUrl(url) || url.startsWith('data:') || url.startsWith('devtools:') || url.startsWith('blob:') || url === 'about:srcdoc') return callback({});
+    if (DEV_URL && url.startsWith(DEV_URL.replace('http', 'ws'))) return callback({});
+    if (resourceType === 'image' && /^https?:/i.test(url)) return callback({});
+    callback({ cancel: true });
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -21,211 +85,159 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: false,
+      spellcheck: false,
+      devTools: !app.isPackaged,
     },
   });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https:\/\//i.test(url)) require('electron').shell.openExternal(url);
+  const contents = mainWindow.webContents;
+  contents.setWindowOpenHandler(({ url }) => {
+    openExternalSafely(url);
     return { action: 'deny' };
   });
+  contents.on('will-navigate', (event, url) => {
+    if (!isAppUrl(url)) event.preventDefault();
+  });
+  contents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame) return;
+    if (event.url === 'about:srcdoc' || event.url === 'about:blank') return;
+    event.preventDefault();
+    openExternalSafely(event.url);
+  });
+  contents.on('will-attach-webview', (event) => event.preventDefault());
 
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-  } else if (!app.isPackaged) {
-    mainWindow.loadURL('http://127.0.0.1:5173');
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
-  }
+  if (DEV_URL) mainWindow.loadURL(DEV_URL);
+  else mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
 }
 
-function accountById(id) {
-  const account = store.state.accounts.find((item) => item.id === id);
-  if (!account) throw new Error('Account not found.');
-  return account;
-}
-
-function stateAfterSave() {
-  store.save();
-  return store.publicState();
+/** Accept IPC only from this app's own top-level page. */
+function handle(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !isAppUrl(event.senderFrame.url)) {
+      throw new Error('Request rejected.');
+    }
+    return handler(...args);
+  });
 }
 
 function registerHandlers() {
-  ipcMain.handle('state:get', () => store.publicState());
+  handle('state:get', () => api.state());
+  handle('settings:language', (language) => api.setLanguage(language));
+  handle('project:create', (input) => api.createProject(input));
+  handle('project:delete', (id) => api.deleteProject(id));
+  handle('account:add', (input) => api.addAccount(input));
+  handle('account:delete', (id) => api.deleteAccount(id));
+  handle('account:sync', (id) => api.syncAccount(id));
+  handle('sync:all', () => api.syncAll());
+  handle('messages:list', (params) => api.listMessages(params));
+  handle('message:open', (id) => api.openMessage(id));
+  handle('message:read', (id, read) => api.setRead(id, read));
+  handle('message:delete', (id) => api.deleteMessage(id));
+  handle('images:trust', (address) => api.trustImages(address));
+  handle('draft:save', (draft) => api.saveDraft(draft));
+  handle('draft:get', (id) => api.getDraft(id));
+  handle('draft:delete', (id) => api.deleteDraft(id));
+  handle('draft:approveSend', (draft) => api.approveAndSend(draft));
+  handle('outbox:retry', (id) => api.retryOutbox(id));
+  handle('outbox:remove', (id) => api.removeOutbox(id));
+  handle('audit:list', () => api.audit());
 
-  ipcMain.handle('settings:language', (_event, language) => {
-    store.state.language = language === 'ar' ? 'ar' : 'en';
-    return stateAfterSave();
-  });
-
-  ipcMain.handle('project:create', (_event, input) => {
-    const project = {
-      id: store.id(),
-      name: String(input.name || '').trim(),
-      color: input.color || '#2d8cff',
-      createdAt: new Date().toISOString(),
-    };
-    if (!project.name) throw new Error('Project name is required.');
-    store.state.projects.push(project);
-    store.audit('project.created', { projectId: project.id, name: project.name });
-    return stateAfterSave();
-  });
-
-  ipcMain.handle('project:delete', (_event, id) => {
-    const hasAccounts = store.state.accounts.some((account) => account.projectId === id);
-    if (hasAccounts) throw new Error('Delete the project accounts first.');
-    store.state.projects = store.state.projects.filter((project) => project.id !== id);
-    store.audit('project.deleted', { projectId: id });
-    return stateAfterSave();
-  });
-
-  ipcMain.handle('account:add', (_event, input) => {
-    if (!store.state.projects.some((project) => project.id === input.projectId)) {
-      throw new Error('Choose a valid project.');
-    }
-    const account = {
-      id: store.id(),
-      projectId: input.projectId,
-      provider: input.provider || 'custom',
-      displayName: String(input.displayName || '').trim(),
-      email: String(input.email || '').trim(),
-      imapHost: String(input.imapHost || '').trim(),
-      imapPort: Number(input.imapPort || 993),
-      imapSecure: input.imapSecure !== false,
-      smtpHost: String(input.smtpHost || '').trim(),
-      smtpPort: Number(input.smtpPort || 465),
-      smtpSecure: input.smtpSecure !== false,
-      inboxPath: input.inboxPath || 'INBOX',
-      encryptedPassword: store.encrypt(input.password),
-      createdAt: new Date().toISOString(),
-      lastSyncAt: null,
-      lastError: null,
-    };
-    if (!account.email || !account.imapHost || !account.smtpHost || !input.password) {
-      throw new Error('Email, password, IMAP, and SMTP settings are required.');
-    }
-    store.state.accounts.push(account);
-    store.audit('account.created', { accountId: account.id, projectId: account.projectId, email: account.email });
-    return stateAfterSave();
-  });
-
-  ipcMain.handle('account:delete', (_event, id) => {
-    store.state.accounts = store.state.accounts.filter((account) => account.id !== id);
-    store.state.messages = store.state.messages.filter((message) => message.accountId !== id);
-    store.state.drafts = store.state.drafts.filter((draft) => draft.accountId !== id);
-    store.audit('account.deleted', { accountId: id });
-    return stateAfterSave();
-  });
-
-  ipcMain.handle('account:sync', async (_event, id) => {
-    const account = accountById(id);
-    mainWindow.webContents.send('sync:status', { accountId: id, status: 'syncing' });
-    try {
-      const previous = new Set(store.state.messages.filter((message) => message.accountId === id).map((message) => message.id));
-      const synced = await syncInbox(account, store.decrypt(account.encryptedPassword));
-      const newMessages = synced.filter((message) => !previous.has(message.id));
-      store.state.messages = [
-        ...synced,
-        ...store.state.messages.filter((message) => message.accountId !== id),
-      ].sort((a, b) => new Date(b.date) - new Date(a.date));
-      account.lastSyncAt = new Date().toISOString();
-      account.lastError = null;
-      store.audit('account.synced', { accountId: id, messages: synced.length, newMessages: newMessages.length });
-      store.save();
-      if (newMessages.length && Notification.isSupported()) {
-        new Notification({
-          title: `${newMessages.length} new message${newMessages.length === 1 ? '' : 's'}`,
-          body: `${account.email} · ${newMessages[0].subject}`,
-        }).show();
-      }
-      mainWindow.webContents.send('sync:status', { accountId: id, status: 'idle' });
-      return store.publicState();
-    } catch (error) {
-      account.lastError = error.message;
-      store.audit('account.sync_failed', { accountId: id, error: error.message });
-      store.save();
-      mainWindow.webContents.send('sync:status', { accountId: id, status: 'error', error: error.message });
-      throw error;
-    }
-  });
-
-  ipcMain.handle('message:get', async (_event, id) => {
-    const message = store.state.messages.find((item) => item.id === id);
-    if (!message) throw new Error('Message not found.');
-    if (message.content) return { ...message, content: message.content };
-    const account = accountById(message.accountId);
-    const content = await fetchMessage(account, store.decrypt(account.encryptedPassword), message.uid, message.folder);
-    message.content = content;
-    message.preview = (content.text || '').slice(0, 240);
-    message.read = true;
-    store.save();
-    return { ...message, content };
-  });
-
-  ipcMain.handle('message:read', (_event, { id, read }) => {
-    const message = store.state.messages.find((item) => item.id === id);
-    if (message) message.read = Boolean(read);
-    return stateAfterSave();
-  });
-
-  ipcMain.handle('draft:save', (_event, input) => {
-    const now = new Date().toISOString();
-    const existing = input.id && store.state.drafts.find((draft) => draft.id === input.id);
-    const draft = existing || { id: store.id(), createdAt: now, status: 'draft' };
-    Object.assign(draft, {
-      accountId: input.accountId,
-      projectId: accountById(input.accountId).projectId,
-      to: input.to || '',
-      cc: input.cc || '',
-      bcc: input.bcc || '',
-      subject: input.subject || '',
-      body: input.body || '',
-      updatedAt: now,
-      status: 'draft',
-    });
-    if (!existing) store.state.drafts.unshift(draft);
-    store.audit('draft.saved', { draftId: draft.id, accountId: draft.accountId });
-    store.save();
-    return { state: store.publicState(), draft };
-  });
-
-  ipcMain.handle('draft:delete', (_event, id) => {
-    store.state.drafts = store.state.drafts.filter((draft) => draft.id !== id);
-    store.audit('draft.deleted', { draftId: id });
-    return stateAfterSave();
-  });
-
-  ipcMain.handle('draft:send', async (_event, id) => {
-    const draft = store.state.drafts.find((item) => item.id === id);
-    if (!draft) throw new Error('Draft not found.');
-    const account = accountById(draft.accountId);
-    const result = await sendMessage(account, store.decrypt(account.encryptedPassword), draft);
-    draft.status = 'sent';
-    draft.sentAt = new Date().toISOString();
-    draft.messageId = result.messageId;
-    store.audit('draft.sent_with_user_approval', { draftId: id, accountId: account.id, messageId: result.messageId });
-    store.save();
-    return { state: store.publicState(), result };
-  });
-
-  ipcMain.handle('attachment:save', async (_event, attachment) => {
-    const result = await dialog.showSaveDialog(mainWindow, { defaultPath: attachment.filename });
+  handle('attachment:save', async ({ messageId, index }) => {
+    const file = await api.attachment(messageId, index);
+    const result = await dialog.showSaveDialog(mainWindow, { defaultPath: path.basename(file.filename) });
     if (result.canceled || !result.filePath) return null;
-    fs.writeFileSync(result.filePath, Buffer.from(attachment.content, 'base64'));
+    fs.writeFileSync(result.filePath, file.content);
+    db.audit('attachment.saved', { messageId, filename: path.basename(file.filename) });
     return result.filePath;
+  });
+
+  handle('compose:pickFiles', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openFile', 'multiSelections'] });
+    if (result.canceled) return [];
+    return result.filePaths.map((file) => {
+      const size = fs.statSync(file).size;
+      if (size > MAX_PICKED_FILE) throw new Error(`${path.basename(file)} is larger than 20 MB.`);
+      return { filename: path.basename(file), contentType: 'application/octet-stream', size, content: fs.readFileSync(file).toString('base64') };
+    });
   });
 }
 
+function notifyNewMail({ newInbox = [] }) {
+  if (!newInbox.length || !Notification.isSupported()) return;
+  const arabic = db.getSetting('language', 'en') === 'ar';
+  new Notification({
+    title: arabic ? `${newInbox.length} رسالة جديدة` : `${newInbox.length} new message${newInbox.length === 1 ? '' : 's'}`,
+    body: `${newInbox[0].from} · ${newInbox[0].subject}`.slice(0, 180),
+    silent: false,
+  }).show();
+}
+
+function openStorage() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Windows data protection is not available, so Emargy Mail cannot store your data securely.');
+  }
+  const dataDir = app.getPath('userData');
+  const vault = new Vault({
+    keyFile: path.join(dataDir, 'vault.key'),
+    protect: (key) => safeStorage.encryptString(key.toString('base64')),
+    unprotect: (data) => Buffer.from(safeStorage.decryptString(data), 'base64'),
+  });
+  db = new Database({ file: path.join(dataDir, 'emargy.db'), vault });
+  migrateLegacyStore({
+    db,
+    legacyFile: path.join(dataDir, 'emargy-mail.json'),
+    decryptLegacySecret: (secret) => (secret ? safeStorage.decryptString(Buffer.from(secret, 'base64')) : ''),
+  });
+}
+
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 app.whenReady().then(() => {
-  store = new Store();
+  try {
+    openStorage();
+  } catch (error) {
+    dialog.showErrorBox('Emargy Mail', error.message);
+    app.quit();
+    return;
+  }
+  if (app.isPackaged) Menu.setApplicationMenu(null);
+  hardenSession();
+  const forward = (channel, payload) => {
+    emit(channel, payload);
+    if (channel === 'mail:changed') notifyNewMail(payload);
+  };
+  sync = new SyncManager({ db, emit: forward });
+  outbox = new Outbox({ db, sync, emit: forward });
+  api = createApi({ db, sync, outbox, emit: forward });
   registerHandlers();
   createWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  sync.start();
+  outbox.start();
+});
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (event) => event.preventDefault());
+});
+
+let quitting = false;
+app.on('before-quit', (event) => {
+  if (quitting || !sync) return;
+  event.preventDefault();
+  quitting = true;
+  outbox?.stop();
+  sync.stop().finally(() => {
+    db?.close();
+    app.quit();
   });
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
-
