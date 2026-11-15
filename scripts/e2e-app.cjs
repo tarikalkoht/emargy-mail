@@ -60,9 +60,9 @@ async function main() {
     await page.locator('.privacy-note').waitFor();
     await page.waitForTimeout(400);
     const frame = await page.locator('.message-frame').evaluate((f) => ({ sandbox: f.getAttribute('sandbox'), height: f.clientHeight, reachable: (() => { try { return Boolean(f.contentDocument); } catch { return false; } })() }));
-    if (/allow-same-origin|allow-scripts/.test(frame.sandbox) || frame.reachable) throw new Error(`Email frame is not isolated: ${JSON.stringify(frame)}`);
-    if (frame.height < 150) throw new Error(`Email frame too short: ${frame.height}px`);
-    step(`email frame isolated (opaque origin, no scripts) and sized to content (${frame.height}px)`);
+    if (/allow-same-origin/.test(frame.sandbox) || frame.reachable) throw new Error(`Email frame is not isolated: ${JSON.stringify(frame)}`);
+    if (frame.height < 150) throw new Error(`Email frame too short (height reporter blocked?): ${frame.height}px`);
+    step(`email frame isolated (opaque origin; only the hashed height reporter runs) and sized to content (${frame.height}px)`);
     await shot('02-inbox-and-privacy');
     step('newsletter opened; images and tracker blocked');
 

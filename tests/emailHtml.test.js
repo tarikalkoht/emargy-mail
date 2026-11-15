@@ -25,10 +25,22 @@ describe('prepareEmailHtml', () => {
       <script>alert(1)</script><form action="https://phish.example"><input name="password"></form>
       <iframe src="https://x.example"></iframe><meta http-equiv="refresh" content="0;url=https://x.example">
       <img src="data:image/png;base64,AAAA" onerror="alert(1)"><a href="javascript:alert(1)">bad</a>`);
-    const body = srcDoc.split('<body>')[1];
+    const body = srcDoc.split('<body>')[1].replace(/<script>[^<]*<\/script>/, '');
     for (const fragment of ['<script', '<form', '<input', '<iframe', 'refresh', 'onerror', 'javascript:']) {
       expect(body).not.toContain(fragment);
     }
+  });
+
+  it('allows only the fixed height reporter to run, by hash', async () => {
+    const { FRAME_REPORTER } = await import('../src/frameReporter.js');
+    const { createHash } = await import('node:crypto');
+    const hash = `sha256-${createHash('sha256').update(FRAME_REPORTER, 'utf8').digest('base64')}`;
+    const { srcDoc } = prepareEmailHtml('<p>hi</p><script>alert(1)</script><img src=x onerror="alert(2)">');
+    expect(srcDoc).toContain(`script-src '${hash}'`);
+    expect(srcDoc).not.toMatch(/script-src[^;]*unsafe-inline/);
+    expect(srcDoc.match(/<script/g)).toHaveLength(1);
+    expect(srcDoc).toContain(`<script>${FRAME_REPORTER}</script>`);
+    expect(srcDoc).not.toMatch(/alert\(/);
   });
 
   it('opens every link in a new window so the app can confirm it', () => {
