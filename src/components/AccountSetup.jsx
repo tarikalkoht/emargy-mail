@@ -9,7 +9,7 @@ const setupError = (t, error) => {
   const duplicate = message.match(/^DUPLICATE_ACCOUNT:([^:]*):(.*)$/);
   return duplicate ? t('duplicateAccount', { email: duplicate[1], project: duplicate[2] }) : message;
 };
-export const PROJECT_COLORS = ['#1F6F5C', '#175CD3', '#6941C6', '#C11574', '#B54708', '#0E7490', '#4D7C0F', '#9F1239'];
+export const PROJECT_COLORS = ['#017B66', '#175CD3', '#6941C6', '#C11574', '#B54708', '#0E7490', '#4D7C0F', '#9F1239'];
 
 export function ColorPicker({ value, onChange, t }) {
   return (

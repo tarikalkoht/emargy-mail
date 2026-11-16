@@ -86,6 +86,8 @@ function createWindow() {
     height: 900,
     minWidth: 1050,
     minHeight: 650,
+    // Packaged builds take the icon from the .exe; this covers running from source.
+    ...(app.isPackaged ? {} : { icon: path.join(__dirname, '..', 'build', 'icon.ico') }),
     backgroundColor: '#07111f',
     show: false,
     title: 'Emargy Mail',

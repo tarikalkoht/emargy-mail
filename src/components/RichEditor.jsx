@@ -14,7 +14,7 @@ import {
 import { sanitizeForEditor } from '../emailHtml';
 import { classNames } from '../lib/format';
 
-const COLORS = ['#1B1F22', '#5F6B73', '#B42318', '#B54708', '#1F6F5C', '#175CD3', '#6941C6', '#C11574'];
+const COLORS = ['#1B1F22', '#5F6B73', '#B42318', '#B54708', '#017B66', '#175CD3', '#6941C6', '#C11574'];
 const HIGHLIGHTS = ['#FEF0C7', '#D1FADF', '#D1E9FF', '#FCE7F6', '#EAECF0'];
 const MAX_IMAGE = 5 * 1024 * 1024;
 
