@@ -103,8 +103,8 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
               <li>{t('googleStep3')}</li>
             </ol>
             <div className="guide-actions">
+              <button type="button" className="button ghost small" onClick={() => api.openHelp('google2sv')}><ExternalLink size={14} />{t('googleOpen2sv')}</button>
               <button type="button" className="button primary small" onClick={() => api.openHelp('googleAppPassword')}><ExternalLink size={14} />{t('googleOpenAppPasswords')}</button>
-              <button type="button" className="button ghost small" onClick={() => api.openHelp('google2sv')}>{t('googleOpen2sv')}</button>
             </div>
           </div>
         )}
