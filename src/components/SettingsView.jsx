@@ -29,6 +29,26 @@ function Segmented({ value, options, onChange, label }) {
   );
 }
 
+function AiSetting({ t, value, onChange }) {
+  const [tools, setTools] = useState([]);
+  useEffect(() => { api.aiStatus().then(setTools).catch(() => setTools([])); }, []);
+  const installed = tools.filter((tool) => tool.available);
+  return (
+    <div className="setting-row">
+      <span>
+        <strong>{t('aiAssistant')}</strong>
+        <small>{t('aiSettingHint')}</small>
+        <small>{installed.length ? t('aiInstalled', { names: installed.map((tool) => tool.label).join('، ') }) : t('aiNoneInstalled')}</small>
+      </span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={t('aiAssistant')}>
+        <option value="auto">{t('aiAuto')}</option>
+        {tools.map((tool) => <option key={tool.id} value={tool.id} disabled={!tool.available}>{tool.available ? tool.label : `${tool.label} — ${t('aiNotInstalled')}`}</option>)}
+        <option value="off">{t('off')}</option>
+      </select>
+    </div>
+  );
+}
+
 function General({ t, state, setState, language }) {
   const s = state.settings;
   const update = async (changes) => setState(await api.updateSettings(changes));
@@ -46,6 +66,7 @@ function General({ t, state, setState, language }) {
       <Toggle label={t('confirmBeforeSend')} hint={t('confirmBeforeSendHint')} checked={s.confirmBeforeSend} onChange={(v) => update({ confirmBeforeSend: v })} />
       <Toggle label={t('markReadOnOpen')} checked={s.markReadOnOpen} onChange={(v) => update({ markReadOnOpen: v })} />
       <Toggle label={t('notifications')} hint={t('notificationsHint')} checked={s.notifications} onChange={(v) => update({ notifications: v })} />
+      <AiSetting t={t} value={s.aiProvider || 'auto'} onChange={(v) => update({ aiProvider: v })} />
     </div>
   );
 }

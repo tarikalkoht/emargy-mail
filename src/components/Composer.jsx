@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, LoaderCircle, Paperclip, Send, ShieldCheck, Trash2, X } from 'lucide-react';
+import { ChevronDown, LoaderCircle, Paperclip, Send, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
 import RichEditor, { setSignature } from './RichEditor';
 import RecipientInput from './RecipientInput';
 import Modal from './Modal';
-import { classNames, formatSize, parseAddresses } from '../lib/format';
+import { classNames, formatSize, paragraphsToHtml, parseAddresses } from '../lib/format';
 
 const api = window.emargy;
 const errorText = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -28,6 +28,8 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
   const [confirming, setConfirming] = useState(false);
   const [sending, setSending] = useState(false);
   const [sigMenu, setSigMenu] = useState(false);
+  const [aiMenu, setAiMenu] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   const editorRef = useRef(null);
   const dirty = useRef(false);
   const saveTimer = useRef(null);
@@ -105,6 +107,38 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
     setSignature(editorRef.current, signatures.find((s) => s.id === id)?.html || '');
     setSigMenu(false);
     touch();
+  };
+
+  // Works on the selection, or on what the writer typed (above the signature and the quote).
+  const writeWithAi = async (task, target = 'en') => {
+    setAiMenu(false);
+    const editor = editorRef.current;
+    if (!editor || aiBusy) return;
+    let { from, to, empty } = editor.state.selection;
+    if (empty) {
+      let end = null;
+      editor.state.doc.forEach((node, offset) => {
+        if (end === null && ['signatureBlock', 'quoteBlock'].includes(node.type.name)) end = offset;
+      });
+      from = 0;
+      to = end ?? editor.state.doc.content.size;
+    }
+    const text = editor.state.doc.textBetween(from, to, '\n\n').trim();
+    if (!text) return onToast(t('aiWriteFirst'), 'error');
+    setAiBusy(true);
+    editor.setEditable(false);
+    try {
+      const result = await api.aiRun({ task, text, language: target });
+      editor.setEditable(true);
+      editor.chain().focus().insertContentAt({ from, to }, paragraphsToHtml(result.text)).run();
+      onToast(t('aiDone', { name: result.label }));
+    } catch (error) {
+      const message = errorText(error);
+      if (message !== 'Cancelled.') onToast(message, 'error');
+    } finally {
+      editor.setEditable(true);
+      setAiBusy(false);
+    }
   };
 
   const addFiles = async () => {
@@ -212,6 +246,19 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
               <button onClick={() => chooseSignature('')}>{t('noSignature')}</button>
               {signatures.map((s) => <button key={s.id} className={classNames(s.id === signatureId && 'checked')} onClick={() => chooseSignature(s.id)}>{s.name}</button>)}
               {!signatures.length && <span className="menu-note">{t('createSignatureHint')}</span>}
+            </div>
+          )}
+        </span>
+        <span className="tool-menu">
+          <button className={classNames('button ghost', 'ai-button')} onClick={() => (aiBusy ? api.aiCancel() : setAiMenu(!aiMenu))} title={aiBusy ? t('cancel') : t('aiWritingHelp')} aria-expanded={aiMenu}>
+            {aiBusy ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{aiBusy ? t('aiWorking') : t('aiAssistant')}
+          </button>
+          {aiMenu && (
+            <div className="menu up">
+              <button onClick={() => writeWithAi('improve')}>{t('aiImprove')}</button>
+              <button onClick={() => writeWithAi('translateDraft', 'ar')}>{t('aiTranslateToArabic')}</button>
+              <button onClick={() => writeWithAi('translateDraft', 'en')}>{t('aiTranslateToEnglish')}</button>
+              <span className="menu-note">{t('aiSelectionHint')}</span>
             </div>
           )}
         </span>

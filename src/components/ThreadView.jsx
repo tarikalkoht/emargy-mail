@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, Trash2,
+  Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, Sparkles, Trash2,
 } from 'lucide-react';
+import AiPanel from './AiPanel';
 import { prepareEmailHtml, sanitizeForEditor } from '../emailHtml';
-import { classNames, displayName, escapeHtml, formatFullDate, formatListDate, formatSize, initial, parseAddresses, senderHue, textToHtml } from '../lib/format';
+import { classNames, displayName, escapeHtml, formatFullDate, formatListDate, formatSize, initial, paragraphsToHtml, parseAddresses, senderHue, textToHtml } from '../lib/format';
 
 function MessageFrame({ html, title }) {
   const ref = useRef(null);
@@ -28,7 +29,7 @@ function Avatar({ value, size = 36 }) {
   return <span className="avatar" style={{ '--hue': senderHue(value), width: size, height: size }} aria-hidden="true">{initial(value)}</span>;
 }
 
-function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender, onReply }) {
+function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate }) {
   const [showOnce, setShowOnce] = useState(false);
   const [details, setDetails] = useState(false);
   const content = message.content;
@@ -69,6 +70,7 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
           )}
         </div>
         <time className="message-time" title={formatFullDate(content.date, language)}>{formatListDate(content.date, language)}</time>
+        <button className="icon-button quiet" onClick={() => onTranslate(message)} title={t('aiTranslate')} aria-label={t('aiTranslate')}><Languages size={16} /></button>
         <button className="icon-button quiet" onClick={() => onReply('reply', message)} title={t('reply')} aria-label={t('reply')}><Reply size={16} /></button>
       </header>
       {prepared?.blockedCount > 0 && !allowRemote && (
@@ -95,7 +97,7 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
   );
 }
 
-export function buildReply(mode, message, account, t, language) {
+export function buildReply(mode, message, account, t, language, prefill = '') {
   const content = message.content;
   const mine = (address) => account && address.toLowerCase() === account.email.toLowerCase();
   const others = (value) => parseAddresses(value).filter((a) => !mine(a.address)).map((a) => (a.name ? `${a.name} <${a.address}>` : a.address));
@@ -125,14 +127,26 @@ export function buildReply(mode, message, account, t, language) {
     subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`,
     inReplyTo: content.messageId,
     references: [content.references, content.messageId].filter(Boolean).join(' '),
-    html: `<p></p><div data-quote="true"><p>${escapeHtml(wrote)}</p><blockquote>${original}</blockquote></div>`,
+    html: `${prefill ? paragraphsToHtml(prefill) : '<p></p>'}<div data-quote="true"><p>${escapeHtml(wrote)}</p><blockquote>${original}</blockquote></div>`,
     focusTo: false,
   };
 }
 
-export default function ThreadView({ t, language, thread, loading, project, account, folders, onAction, onReply, onTrustSender, composer }) {
+function messageText(message) {
+  const c = message.content;
+  return `From: ${c.from}
+Date: ${c.date}
+Subject: ${c.subject || ''}
+
+${c.text || ''}`;
+}
+
+export default function ThreadView({ t, language, thread, loading, project, account, folders, onAction, onReply, onTrustSender, onToast, composer }) {
   const [expanded, setExpanded] = useState(new Set());
   const [moveOpen, setMoveOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [job, setJob] = useState(null);
+  const jobId = useRef(0);
   const bottomRef = useRef(null);
   const messages = thread?.messages || [];
   const last = messages[messages.length - 1];
@@ -141,6 +155,10 @@ export default function ThreadView({ t, language, thread, loading, project, acco
     // Open the newest message and every unread one, like a real conversation view.
     setExpanded(new Set(messages.filter((m, i) => i === messages.length - 1 || !m.read).map((m) => m.id)));
     setMoveOpen(false);
+    setAiOpen(false);
+    jobId.current += 1; // a late answer for the previous conversation is ignored
+    if (job?.running) window.emargy.aiCancel();
+    setJob(null);
   }, [thread]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (composer) bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [composer]);
 
@@ -155,6 +173,23 @@ export default function ThreadView({ t, language, thread, loading, project, acco
     );
   }
   const ids = messages.map((m) => m.id);
+  const runAi = async (task, title, text, target = language) => {
+    setAiOpen(false);
+    if (job?.running) return;
+    const id = ++jobId.current;
+    setJob({ task, title, running: true });
+    try {
+      const result = await window.emargy.aiRun({ task, text, language: target });
+      if (id === jobId.current) setJob({ task, title, text: result.text, label: result.label });
+    } catch (error) {
+      const message = String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      if (id === jobId.current) setJob(message === 'Cancelled.' ? null : { task, title, error: message });
+    }
+  };
+  const conversation = () => messages.slice(-8).map(messageText).join('\n\n-----\n\n');
+  // Only the message itself: headers would be translated too and get in the way.
+  const translate = (message, target = language) => runAi('translate', t(target === 'ar' ? 'aiTranslateToArabic' : 'aiTranslateToEnglish'), message.content.text || message.content.subject || '', target);
+  const cancelAi = () => { jobId.current += 1; setJob(null); window.emargy.aiCancel(); };
   const flagged = messages.some((m) => m.flagged);
   const moveTargets = folders.filter((f) => f.accountId === last.accountId && f.id !== last.folderId);
 
@@ -164,6 +199,20 @@ export default function ThreadView({ t, language, thread, loading, project, acco
         <button className="tool-text" onClick={() => onReply('reply', last)}><Reply size={16} />{t('reply')}</button>
         <button className="tool-text" onClick={() => onReply('replyAll', last)}><ReplyAll size={16} />{t('replyAll')}</button>
         <button className="tool-text" onClick={() => onReply('forward', last)}><Forward size={16} />{t('forward')}</button>
+        <span className="tool-sep" />
+        <span className="tool-menu">
+          <button className={classNames('tool-text', 'ai-button', job?.running && 'busy')} onClick={() => setAiOpen(!aiOpen)} aria-expanded={aiOpen}>
+            {job?.running ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{t('aiAssistant')}
+          </button>
+          {aiOpen && (
+            <div className="menu">
+              <button onClick={() => runAi('summarize', t('aiSummary'), conversation())}>{t('aiSummarize')}</button>
+              <button onClick={() => runAi('reply', t('aiSuggestedReply'), conversation())}>{t('aiSuggestReply')}</button>
+              <button onClick={() => translate(last, 'ar')}>{t('aiTranslateToArabic')}</button>
+              <button onClick={() => translate(last, 'en')}>{t('aiTranslateToEnglish')}</button>
+            </div>
+          )}
+        </span>
         <span className="tool-sep" />
         <button className="icon-button quiet" onClick={() => onAction('archive', ids)} title={`${t('archive')} (E)`} aria-label={t('archive')}><Archive size={17} /></button>
         <button className="icon-button quiet" onClick={() => onAction('trash', ids)} title={`${t('delete')} (Del)`} aria-label={t('delete')}><Trash2 size={17} /></button>
@@ -188,6 +237,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
             {messages.some((m) => m.hasAttachments) && <Paperclip size={14} className="muted-icon" />}
           </div>
         </header>
+        <AiPanel t={t} job={job} onToast={onToast} onClose={() => setJob(null)} onCancel={cancelAi} onUseReply={(text) => { onReply('reply', last, { prefill: text }); setJob(null); }} />
         <div className="thread-messages">
           {messages.map((message) => (
             <ThreadMessage
@@ -199,6 +249,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
               onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(message.id)) next.delete(message.id); else next.add(message.id); return next; })}
               onTrustSender={onTrustSender}
               onReply={onReply}
+              onTranslate={(m) => translate(m)}
             />
           ))}
         </div>

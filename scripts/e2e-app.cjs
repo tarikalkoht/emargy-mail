@@ -141,6 +141,43 @@ async function main() {
     await shot('08-new-message');
     step('new message with contact suggestions');
 
+    // Uses the Claude/Codex tool signed in on this computer (the reader's subscription).
+    if (process.env.EMARGY_E2E_AI) {
+      await page.locator('.composer .rich-content > p').first().click(); // above the signature
+      await page.keyboard.type('hi ahmed, i will sent you the price tomorow becuse the manager is not here today');
+      await page.locator('.composer').getByRole('button', { name: 'المساعد' }).click();
+      await page.getByRole('button', { name: 'تحسين الصياغة' }).click();
+      await page.locator('.toast').waitFor({ timeout: 150000 });
+      const toastText = await page.locator('.toast').innerText();
+      if (!/تم عبر/.test(toastText)) throw new Error(`Assistant failed: ${toastText}`);
+      const improved = await page.locator('.composer .rich-content').innerText();
+      if (/tomorow|becuse/.test(improved)) throw new Error(`Draft was not improved: ${improved}`);
+      await shot('09-ai-improve');
+      step(`assistant improved the draft: "${improved.split('\n')[0].slice(0, 70)}…"`);
+      await page.locator('.composer-head .icon-button').click();
+
+      await page.getByRole('button', { name: 'كل الوارد' }).click();
+      await page.locator('.row', { hasText: 'Invoice' }).click();
+      await page.locator('.thread-toolbar').getByRole('button', { name: 'المساعد' }).click();
+      await page.getByRole('button', { name: 'ترجمة إلى العربية' }).click();
+      const result = page.locator('.ai-result');
+      await result.waitFor({ timeout: 150000 });
+      const translated = await result.innerText();
+      if (!/[؀-ۿ]{3}/.test(translated) || !/INV-2026-118|14/.test(translated)) throw new Error(`Bad translation: ${translated}`);
+      await shot('10-ai-translate');
+      step('assistant translated the message to Arabic, keeping the invoice number');
+
+      await page.locator('.thread-toolbar').getByRole('button', { name: 'المساعد' }).click();
+      await page.getByRole('button', { name: 'اقتراح رد' }).click();
+      await page.locator('.ai-panel', { hasText: 'رد مقترح' }).locator('.ai-result').waitFor({ timeout: 150000 });
+      await page.getByRole('button', { name: 'استخدمه في الرد' }).click();
+      await page.locator('.composer.inline .rich-content').waitFor();
+      const replyText = await page.locator('.composer.inline .rich-content').innerText();
+      if (replyText.trim().length < 20) throw new Error('Suggested reply was not placed in the composer.');
+      await shot('11-ai-reply');
+      step('suggested reply placed in the reply editor, above the quote');
+    }
+
     await app.evaluate(() => {});
     const files = fs.readdirSync(dataDir).filter((f) => /emargy\.db/.test(f)).map((f) => fs.readFileSync(path.join(dataDir, f)).toString('latin1')).join('');
     const leaks = ['Black Friday', 'alnoor', DEMO_USER, DEMO_PASSWORD, 'Tarek Alkoht', 'INV-2026-118'].filter((s) => files.includes(s));

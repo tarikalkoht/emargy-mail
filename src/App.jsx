@@ -229,8 +229,8 @@ export default function App() {
     setComposer({ key: Date.now(), inline: false, initial: { mode: 'new', accountId: defaultAccount || state.accounts[0].id, focusTo: true, ...initial } });
     return null;
   };
-  const reply = (mode, message) => {
-    const initial = buildReply(mode, message, accountsById[message.accountId], t, language);
+  const reply = (mode, message, options = {}) => {
+    const initial = buildReply(mode, message, accountsById[message.accountId], t, language, options.prefill);
     setComposer({ key: Date.now(), inline: true, initial });
   };
   const openDraft = async (id) => {
@@ -375,6 +375,7 @@ export default function App() {
                 folders={state.folders}
                 onAction={threadAction}
                 onReply={reply}
+                onToast={showToast}
                 onTrustSender={async (address) => {
                   await guard(() => api.trustImages(address));
                   setThread((current) => current && ({ ...current, messages: current.messages.map((m) => (m.content.fromAddress === address ? { ...m, imagesTrusted: true } : m)) }));

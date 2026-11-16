@@ -72,3 +72,8 @@ export function escapeHtml(value = '') {
 export function textToHtml(value = '') {
   return String(value).split(/\r?\n/).map((line) => `<p dir="auto">${escapeHtml(line) || '<br>'}</p>`).join('');
 }
+
+/** Plain text with blank-line paragraphs (as written by the assistant) to editor HTML. */
+export function paragraphsToHtml(value = '') {
+  return String(value).trim().split(/\n\s*\n/).map((block) => `<p dir="auto">${block.split('\n').map(escapeHtml).join('<br>')}</p>`).join('');
+}

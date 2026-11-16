@@ -1,11 +1,12 @@
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, Notification, dialog, ipcMain, safeStorage, session, shell } = require('electron');
 const { Vault } = require('./vault.cjs');
 const { Database } = require('./db.cjs');
 const { SyncManager } = require('./sync.cjs');
 const { Outbox } = require('./outbox.cjs');
 const { createApi } = require('./api.cjs');
+const ai = require('./ai.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged && !process.env.EMARGY_USE_DIST ? 'http://127.0.0.1:5173' : null);
@@ -129,6 +130,15 @@ function registerHandlers() {
   handle('state:get', () => api.state());
   handle('settings:language', (language) => api.setLanguage(language));
   handle('settings:update', (changes) => api.updateSettings(changes));
+  handle('ai:status', () => ai.status());
+  handle('ai:run', (request) => ai.run({
+    task: String(request?.task || ''),
+    text: String(request?.text || ''),
+    language: request?.language === 'ar' ? 'ar' : 'en',
+    preference: api.state().settings.aiProvider,
+  }));
+  handle('ai:cancel', () => ai.cancel());
+  handle('clipboard:write', (value) => { clipboard.writeText(String(value ?? '').slice(0, 200_000)); return true; });
   handle('project:create', (input) => api.createProject(input));
   handle('project:delete', (id) => api.deleteProject(id));
   handle('account:detect', (email) => api.detectServers(email));

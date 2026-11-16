@@ -455,3 +455,16 @@ button.page-row-main:hover { background: var(--surface-2); }
   :root { --sidebar: 232px; --list: 340px; }
   .message-body, .attachment-strip { padding-inline-start: 16px !important; padding-inline-end: 16px !important; }
 }
+
+/* Assistant */
+.thread-toolbar .tool-menu .menu { inset-inline-start: 0; inset-inline-end: auto; }
+.ai-button svg { color: var(--accent); }
+.ai-panel { margin: 0 20px 12px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent-soft); color: var(--ink); }
+.ai-panel header { display: flex; align-items: center; gap: 8px; }
+.ai-panel header > svg { color: var(--accent); flex: none; }
+.ai-panel header strong { font-size: 14px; }
+.ai-panel header small { flex: 1; color: var(--muted); font-size: 12px; }
+.ai-running { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; color: var(--ink-2); font-size: 13px; }
+.ai-result p { margin: 0 0 10px; }
+.ai-result { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.75; max-height: 420px; overflow-y: auto; }
+.ai-panel footer { display: flex; gap: 8px; margin-top: 12px; }
