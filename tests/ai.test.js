@@ -46,3 +46,12 @@ describe('AI assistant bridge', () => {
     expect(ai.cleanOutput('a\r\nb ')).toBe('a\nb');
   });
 });
+
+describe('AI providers', () => {
+  it('turns off every Codex tool and offers only verified providers', () => {
+    const args = ai.PROVIDERS.codex.args({ outFile: 'a.txt' }).join(' ');
+    for (const feature of ['shell_tool', 'unified_exec', 'apps', 'browser_use', 'computer_use']) expect(args).toContain(`--disable ${feature}`);
+    expect(args).toContain('--ignore-user-config');
+    expect(Object.keys(ai.PROVIDERS)).toEqual(['claude', 'codex']);
+  });
+});

@@ -2,12 +2,12 @@
  * AI assistant through the reader's own subscriptions.
  *
  * No API keys: the app runs the vendor's official command-line tool (Claude Code, Codex,
- * Gemini CLI) that the reader installed and signed in to with their subscription. API-key
+ * later Gemini CLI) that the reader installed and signed in to with their subscription. API-key
  * variables are removed from the child's environment so a call can never be billed per token.
  *
  * Safety: the text goes in through stdin (never on a command line), each run happens in a
  * fresh empty folder that is deleted afterwards, tools are disabled where the CLI allows it
- * (Claude) or limited to a read-only sandbox (Codex), and the result is only shown to the
+ * (Claude), or every Codex tool is disabled on top of its read-only sandbox, and the result is only shown to the
  * reader — nothing is sent anywhere without them.
  */
 const { spawn } = require('node:child_process');
@@ -65,6 +65,8 @@ function cleanOutput(value) {
     .slice(0, MAX_OUTPUT);
 }
 
+const CODEX_DISABLED = ['shell_tool', 'unified_exec', 'apps', 'browser_use', 'browser_use_external', 'in_app_browser', 'computer_use', 'code_mode_host', 'tool_suggest', 'skill_mcp_dependency_install'];
+
 const PROVIDERS = {
   claude: {
     label: 'Claude',
@@ -78,18 +80,17 @@ const PROVIDERS = {
     label: 'ChatGPT (Codex)',
     names: ['codex'],
     extra: () => [path.join(process.env.APPDATA || '', 'npm', 'codex.cmd')],
-    args: ({ outFile }) => ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never', '-o', outFile, '-'],
+    // Every tool is switched off (shell, exec, browser, computer use, apps, web search) and the
+    // user's config with its MCP servers is ignored, so a message cannot make it read files.
+    args: ({ outFile }) => [
+      'exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--color', 'never',
+      ...CODEX_DISABLED.flatMap((feature) => ['--disable', feature]),
+      '-c', 'web_search=disabled', '-o', outFile, '-',
+    ],
     stdin: ({ task, text, language }) => buildPrompt(task, text, language),
     readsFile: true,
   },
-  gemini: {
-    label: 'Gemini',
-    names: ['gemini'],
-    extra: () => [path.join(process.env.APPDATA || '', 'npm', 'gemini.cmd')],
-    // -p is appended to what arrives on stdin.
-    args: () => ['-p', 'Follow the instructions above.'],
-    stdin: ({ task, text, language }) => buildPrompt(task, text, language),
-  },
+  // Gemini CLI is left out until its file-reading tools can be verified as switched off.
 };
 
 function findExecutable(provider) {
@@ -117,7 +118,7 @@ function pickProvider(preference) {
   }
   throw new Error(PROVIDERS[preference]
     ? `${PROVIDERS[preference].label} is not installed on this computer.`
-    : 'No AI tool found. Install Claude Code, Codex or Gemini CLI and sign in with your subscription.');
+    : 'No AI tool found. Install Claude Code or Codex and sign in with your subscription.');
 }
 
 function childEnvironment() {

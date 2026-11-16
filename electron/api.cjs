@@ -22,7 +22,7 @@ const SETTING_RULES = {
   confirmBeforeSend: (v) => typeof v === 'boolean',
   notifications: (v) => typeof v === 'boolean',
   markReadOnOpen: (v) => typeof v === 'boolean',
-  aiProvider: (v) => ['auto', 'claude', 'codex', 'gemini', 'off'].includes(v),
+  aiProvider: (v) => ['auto', 'claude', 'codex', 'off'].includes(v),
 };
 
 function text(value, max = 500) {
