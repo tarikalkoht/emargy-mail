@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = {
   notifications: true,
   markReadOnOpen: true,
   aiProvider: 'auto',
+  autoUpdate: true,
 };
 const SETTING_RULES = {
   theme: (v) => ['system', 'light', 'dark'].includes(v),
@@ -23,6 +24,7 @@ const SETTING_RULES = {
   notifications: (v) => typeof v === 'boolean',
   markReadOnOpen: (v) => typeof v === 'boolean',
   aiProvider: (v) => ['auto', 'claude', 'codex', 'off'].includes(v),
+  autoUpdate: (v) => typeof v === 'boolean',
 };
 
 function text(value, max = 500) {

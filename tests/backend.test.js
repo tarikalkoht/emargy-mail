@@ -201,7 +201,7 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
   });
 
   it('stores signatures encrypted and links them to accounts', async () => {
-    let state = api.saveSignature({ name: 'Work', html: '<p>Tarek · Emargy</p>' });
+    let state = api.saveSignature({ name: 'Work', html: '<p>Sami · Emargy</p>' });
     const signature = state.signatures[0];
     state = await api.updateAccount(state.accounts[0].id, { signatureNew: signature.id, signatureReply: signature.id });
     expect(state.accounts[0].signatureNew).toBe(signature.id);
@@ -245,10 +245,10 @@ describe('server auto-detection (DNS only)', () => {
   });
 
   it('finds a shared-hosting server from the MX host when mail.<domain> is proxied', async () => {
-    const live = new Set(['paloma.hostns.test:993', 'paloma.hostns.test:465']);
+    const live = new Set(['mx1.sharedhost.test:993', 'mx1.sharedhost.test:465']);
     const probe = async (host, port) => live.has(`${host}:${port}`);
-    expect(await detectServers('info@shop.test', resolver([{ exchange: 'paloma.hostns.test', priority: 0 }]), probe))
-      .toMatchObject({ imapHost: 'paloma.hostns.test', smtpHost: 'paloma.hostns.test', smtpPort: 465, smtpSecure: true, source: 'probe' });
+    expect(await detectServers('info@shop.test', resolver([{ exchange: 'mx1.sharedhost.test', priority: 0 }]), probe))
+      .toMatchObject({ imapHost: 'mx1.sharedhost.test', smtpHost: 'mx1.sharedhost.test', smtpPort: 465, smtpSecure: true, source: 'probe' });
     // No server answered with a valid certificate: suggest the MX host rather than a blind guess.
     expect(await detectServers('info@shop.test', resolver([{ exchange: 'mx.shop.test.' }]), async () => false))
       .toMatchObject({ imapHost: 'mx.shop.test', source: 'guess' });

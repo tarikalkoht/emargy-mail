@@ -7,6 +7,7 @@ const { SyncManager } = require('./sync.cjs');
 const { Outbox } = require('./outbox.cjs');
 const { createApi } = require('./api.cjs');
 const ai = require('./ai.cjs');
+const { Updater } = require('./updater.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged && !process.env.EMARGY_USE_DIST ? 'http://127.0.0.1:5173' : null);
@@ -18,6 +19,7 @@ let db;
 let sync;
 let outbox;
 let api;
+let updater;
 
 // A separate data folder for demos and automated tests, so real data is never touched.
 if (process.env.EMARGY_DATA_DIR) app.setPath('userData', path.resolve(process.env.EMARGY_DATA_DIR));
@@ -129,7 +131,14 @@ function handle(channel, handler) {
 function registerHandlers() {
   handle('state:get', () => api.state());
   handle('settings:language', (language) => api.setLanguage(language));
-  handle('settings:update', (changes) => api.updateSettings(changes));
+  handle('settings:update', (changes) => {
+    const result = api.updateSettings(changes);
+    if (changes && 'autoUpdate' in changes) {
+      if (result.settings.autoUpdate) updater.start(1000);
+      else updater.stop();
+    }
+    return result;
+  });
   handle('ai:status', () => ai.status());
   handle('ai:run', (request) => ai.run({
     task: String(request?.task || ''),
@@ -138,6 +147,19 @@ function registerHandlers() {
     preference: api.state().settings.aiProvider,
   }));
   handle('ai:cancel', () => ai.cancel());
+  // Only these fixed pages can be opened this way (no URL comes from the interface).
+  handle('help:open', (key) => {
+    const pages = {
+      googleAppPassword: 'https://myaccount.google.com/apppasswords',
+      google2sv: 'https://myaccount.google.com/signinoptions/twosv',
+      releases: 'https://github.com/tarikalkoht/emargy-mail/releases',
+    };
+    if (!pages[key]) throw new Error('Unknown page.');
+    return shell.openExternal(pages[key]);
+  });
+  handle('update:status', () => updater.status);
+  handle('update:check', () => updater.check());
+  handle('update:install', () => updater.install());
   handle('clipboard:write', (value) => { clipboard.writeText(String(value ?? '').slice(0, 200_000)); return true; });
   handle('project:create', (input) => api.createProject(input));
   handle('project:delete', (id) => api.deleteProject(id));
@@ -257,10 +279,18 @@ app.whenReady().then(() => {
   sync = new SyncManager({ db, emit: forward });
   outbox = new Outbox({ db, sync, emit: forward });
   api = createApi({ db, sync, outbox, emit: forward });
+  updater = new Updater({
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
+    emit: (status) => emit('update:status', status),
+    onQuit: () => app.quit(),
+  });
   registerHandlers();
   createWindow();
   sync.start();
   outbox.start();
+  if (api.state().settings.autoUpdate) updater.start();
 });
 
 app.on('web-contents-created', (_event, contents) => {

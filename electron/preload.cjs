@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('emargy', {
   aiRun: invoke('ai:run'),
   aiCancel: invoke('ai:cancel'),
   copyText: invoke('clipboard:write'),
+  openHelp: invoke('help:open'),
+  updateStatus: invoke('update:status'),
+  checkForUpdate: invoke('update:check'),
+  installUpdate: invoke('update:install'),
   createProject: invoke('project:create'),
   deleteProject: invoke('project:delete'),
   detectServers: invoke('account:detect'),
@@ -54,4 +58,5 @@ contextBridge.exposeInMainWorld('emargy', {
   onSyncStatus: subscribe('sync:status'),
   onMailChanged: subscribe('mail:changed'),
   onOutboxChanged: subscribe('outbox:changed'),
+  onUpdateStatus: subscribe('update:status'),
 });

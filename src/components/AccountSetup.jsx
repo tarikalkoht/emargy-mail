@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, ChevronDown, LoaderCircle, Lock } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ExternalLink, LoaderCircle, Lock } from 'lucide-react';
 import { classNames } from '../lib/format';
 
 const api = window.emargy;
@@ -31,6 +31,7 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
   const needProject = !projects.length && !createdProjectId;
   const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const setServer = (key, value) => setServers((current) => ({ ...current, [key]: value }));
+  const isGoogle = servers?.provider === 'gmail';
 
   const detect = async (email) => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
@@ -85,10 +86,23 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
         )}
         <label className="field"><span>{t('yourName')}</span><input value={form.displayName} onChange={(e) => set('displayName', e.target.value)} placeholder={t('yourNameExample')} dir="auto" /></label>
         <label className="field"><span>{t('email')}</span><input type="email" required dir="ltr" autoFocus={!needProject} value={form.email} onChange={(e) => { set('email', e.target.value); setServers(null); }} onBlur={(e) => !servers && detect(e.target.value)} /></label>
-        <label className="field"><span>{t('password')}</span><input type="password" required dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => set('password', e.target.value)} /></label>
+        <label className="field"><span>{isGoogle ? t('appPassword') : t('password')}</span><input type="password" required dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => set('password', isGoogle ? e.target.value.replace(/\s+/g, '') : e.target.value)} placeholder={isGoogle ? 'xxxx xxxx xxxx xxxx' : undefined} /></label>
         <p className="hint"><Lock size={13} />{t('passwordHelp')}</p>
         {servers?.needsOAuth && <p className="warning"><AlertTriangle size={15} />{t('microsoftWarning')}</p>}
-        {servers?.provider === 'gmail' && <p className="hint">{t('gmailHint')}</p>}
+        {isGoogle && (
+          <div className="provider-guide">
+            <strong>{t('googleGuideTitle')}</strong>
+            <ol>
+              <li>{t('googleStep1')}</li>
+              <li>{t('googleStep2')}</li>
+              <li>{t('googleStep3')}</li>
+            </ol>
+            <div className="guide-actions">
+              <button type="button" className="button primary small" onClick={() => api.openHelp('googleAppPassword')}><ExternalLink size={14} />{t('googleOpenAppPasswords')}</button>
+              <button type="button" className="button ghost small" onClick={() => api.openHelp('google2sv')}>{t('googleOpen2sv')}</button>
+            </div>
+          </div>
+        )}
 
         <button type="button" className="disclosure" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
           <ChevronDown size={14} />{t('serverSettings')}{servers && !advanced && <span className="muted">{servers.imapHost}</span>}

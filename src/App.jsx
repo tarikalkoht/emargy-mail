@@ -63,6 +63,7 @@ export default function App() {
   const [thread, setThread] = useState(null);
   const [threadLoading, setThreadLoading] = useState(false);
   const [composer, setComposer] = useState(null);
+  const [update, setUpdate] = useState(null);
   const [toast, setToast] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const toastTimer = useRef(null);
@@ -109,7 +110,9 @@ export default function App() {
     const offStatus = api.onSyncStatus(({ accountId, status, error }) => setState((current) => ({ ...current, accounts: current.accounts.map((a) => (a.id === accountId ? { ...a, sync: { status, error } } : a)) })));
     const offMail = api.onMailChanged(() => { refreshList().catch(() => {}); refreshState().catch(() => {}); });
     const offOutbox = api.onOutboxChanged(() => refreshState().catch(() => {}));
-    return () => { offStatus(); offMail(); offOutbox(); };
+    const offUpdate = api.onUpdateStatus(setUpdate);
+    api.updateStatus().then(setUpdate).catch(() => {});
+    return () => { offStatus(); offMail(); offOutbox(); offUpdate(); };
   }, [refreshList, refreshState]);
 
   // Theme, density and direction.
@@ -336,6 +339,7 @@ export default function App() {
         onCompose={() => compose()}
         onAddProject={() => setView('settings-projects')}
         onAddAccount={() => setView('settings-accounts')}
+        update={update}
       />
       {view === 'mail' && (
         <>

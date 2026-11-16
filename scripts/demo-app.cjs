@@ -27,7 +27,7 @@ async function main() {
   await page.waitForSelector('.welcome');
   await page.getByRole('button', { name: 'العربية' }).click();
   await page.getByLabel('اسم المشروع').fill('إيمارجي');
-  await page.getByLabel(/اسمك/).fill('طارق');
+  await page.getByLabel(/اسمك/).fill('سامي');
   await page.getByLabel('عنوان البريد').fill(DEMO_USER);
   await page.getByLabel('كلمة المرور', { exact: true }).fill(DEMO_PASSWORD);
   await page.waitForTimeout(300);
@@ -41,7 +41,7 @@ async function main() {
   await page.getByRole('button', { name: 'ربط الحساب' }).click();
   await page.waitForSelector('.app .row', { timeout: 30000 });
   const state = await page.evaluate(async () => {
-    await window.emargy.saveSignature({ name: 'توقيع العمل', html: '<p><strong>طارق</strong></p><p>إيمارجي — +971 50 000 0000</p>' });
+    await window.emargy.saveSignature({ name: 'توقيع العمل', html: '<p><strong>سامي</strong></p><p>إيمارجي — +971 50 000 0000</p>' });
     const s = await window.emargy.getState();
     return window.emargy.updateAccount(s.accounts[0].id, { signatureNew: s.signatures[0].id, signatureReply: s.signatures[0].id });
   });

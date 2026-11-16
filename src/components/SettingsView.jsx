@@ -29,6 +29,33 @@ function Segmented({ value, options, onChange, label }) {
   );
 }
 
+function UpdateSetting({ t, enabled, onChange }) {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    api.updateStatus().then(setStatus).catch(() => {});
+    return api.onUpdateStatus(setStatus);
+  }, []);
+  const label = status && {
+    checking: t('updateChecking'),
+    current: t('updateCurrent'),
+    downloading: t('updateDownloading', { version: status.version }),
+    ready: t('updateReady', { version: status.version }),
+    available: t('updateAvailable', { version: status.version }),
+    error: t('updateError', { error: status.error }),
+  }[status.state];
+  return (
+    <>
+      <Toggle label={t('autoUpdate')} hint={t('autoUpdateHint')} checked={enabled} onChange={onChange} />
+      <div className="setting-row">
+        <span><strong>{t('version', { version: status?.currentVersion || '' })}</strong>{label && <small>{label}</small>}</span>
+        {status?.state === 'ready'
+          ? <button className="button primary" onClick={() => api.installUpdate()}>{t('updateRestart')}</button>
+          : <button className="button ghost" disabled={status?.state === 'checking' || status?.state === 'downloading'} onClick={() => api.checkForUpdate().then(setStatus)}>{t('updateCheckNow')}</button>}
+      </div>
+    </>
+  );
+}
+
 function AiSetting({ t, value, onChange }) {
   const [tools, setTools] = useState([]);
   useEffect(() => { api.aiStatus().then(setTools).catch(() => setTools([])); }, []);
@@ -67,6 +94,7 @@ function General({ t, state, setState, language }) {
       <Toggle label={t('markReadOnOpen')} checked={s.markReadOnOpen} onChange={(v) => update({ markReadOnOpen: v })} />
       <Toggle label={t('notifications')} hint={t('notificationsHint')} checked={s.notifications} onChange={(v) => update({ notifications: v })} />
       <AiSetting t={t} value={s.aiProvider || 'auto'} onChange={(v) => update({ aiProvider: v })} />
+      <UpdateSetting t={t} enabled={s.autoUpdate !== false} onChange={(v) => update({ autoUpdate: v })} />
     </div>
   );
 }

@@ -49,7 +49,7 @@ async function main() {
     const shot = async (name) => { await page.waitForTimeout(250); await page.screenshot({ path: path.join(shotsDir, `${name}.png`) }); };
 
     await page.waitForSelector('.welcome');
-    await setupAccount(page, servers, { projectName: 'Emargy', name: 'Tarek' });
+    await setupAccount(page, servers, { projectName: 'Emargy', name: 'Sami' });
     await shot('01-welcome');
     await page.getByRole('button', { name: /Connect account|ربط الحساب/ }).click();
     await page.waitForSelector('.app .row', { timeout: 30000 });
@@ -72,9 +72,9 @@ async function main() {
     await page.getByLabel('Name', { exact: true }).fill('Work');
     const sigEditor = page.locator('.signature-editor .rich-content');
     await sigEditor.click();
-    await page.keyboard.type('Tarek Alkoht');
+    await page.keyboard.type('Sami Haddad');
     await page.keyboard.press('Enter');
-    await page.keyboard.type('Emargy · +971 50 000 0000');
+    await page.keyboard.type('Emargy · +1 555 0100');
     await shot('03-signature-editor');
     await page.getByRole('button', { name: 'Save signature' }).click();
     await page.getByRole('tab', { name: 'Accounts' }).click();
@@ -89,13 +89,26 @@ async function main() {
     await page.locator('.toast').waitFor();
     step('signature created and assigned to the account');
 
+    await page.getByRole('button', { name: 'Add account' }).last().click();
+    await page.locator('form.setup').getByLabel(/Email address/).fill('someone@gmail.com');
+    await page.locator('form.setup').getByLabel(/Your name/).click(); // leaving the field detects the provider
+    await page.locator('.provider-guide').waitFor();
+    if (!(await page.getByLabel('Google app password').count())) throw new Error('Google app password field missing.');
+    await shot('03b-google-guide');
+    step('Gmail address shows the guided app-password setup');
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await page.getByRole('tab', { name: 'General' }).click();
+    await page.getByRole('button', { name: 'Check now' }).waitFor();
+    await page.locator('.setting-row strong', { hasText: /^Version \d+\.\d+\.\d+$/ }).waitFor({ timeout: 5000 });
+    step('update settings show the version and a check button');
+
     await page.getByRole('button', { name: 'All inboxes' }).click();
     await page.locator('.row', { hasText: 'عرض سعر' }).click();
     await page.locator('.thread-head h1', { hasText: 'عرض سعر' }).waitFor();
     await page.locator('.thread-toolbar').getByRole('button', { name: 'Reply', exact: true }).click();
     const editor = page.locator('.composer .rich-content');
     await editor.waitFor();
-    await page.locator('.composer .signature-block', { hasText: 'Tarek Alkoht' }).waitFor();
+    await page.locator('.composer .signature-block', { hasText: 'Sami Haddad' }).waitFor();
     await page.keyboard.type('شكراً أحمد، استلمنا ');
     await page.keyboard.press('Control+b');
     await page.keyboard.type('عرض السعر');
@@ -110,7 +123,7 @@ async function main() {
     for (let i = 0; i < 150 && !servers.delivered.length; i += 1) await page.waitForTimeout(100);
     if (!servers.delivered.length) throw new Error('Reply was not delivered.');
     const sent = servers.delivered[0].parsed;
-    if (!/<strong>عرض السعر<\/strong>/.test(sent.html) || !/Tarek Alkoht/.test(sent.html)) throw new Error('Sent HTML is missing formatting or signature.');
+    if (!/<strong>عرض السعر<\/strong>/.test(sent.html) || !/Sami Haddad/.test(sent.html)) throw new Error('Sent HTML is missing formatting or signature.');
     step(`after the undo window, delivered "${sent.subject}" with formatting and signature`);
     await page.waitForTimeout(500);
     const draftsLeft = await app.evaluate(() => null).then(() => page.evaluate(() => window.emargy.getState().then((s) => s.drafts.length)));
@@ -180,7 +193,7 @@ async function main() {
 
     await app.evaluate(() => {});
     const files = fs.readdirSync(dataDir).filter((f) => /emargy\.db/.test(f)).map((f) => fs.readFileSync(path.join(dataDir, f)).toString('latin1')).join('');
-    const leaks = ['Black Friday', 'alnoor', DEMO_USER, DEMO_PASSWORD, 'Tarek Alkoht', 'INV-2026-118'].filter((s) => files.includes(s));
+    const leaks = ['Black Friday', 'alnoor', DEMO_USER, DEMO_PASSWORD, 'Sami Haddad', 'INV-2026-118'].filter((s) => files.includes(s));
     if (leaks.length) throw new Error(`Plaintext found in database: ${leaks.join(', ')}`);
     step('database holds no readable mail, addresses, signature or password');
     const external = outgoing.filter((url) => !/^https?:\/\/127\.0\.0\.1/.test(url));
