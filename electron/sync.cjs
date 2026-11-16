@@ -1,6 +1,7 @@
 const { ImapFlow } = require('imapflow');
 const { imapConfig, parseRawMessage, summarizeFetched } = require('./mail.cjs');
-const { classifyTrust } = require('./core.cjs');
+const { classifyTrust, trustedAuthServers } = require('./core.cjs');
+const { verifiedDkimDomains } = require('./dkim.cjs');
 
 const INITIAL_WINDOW = 500;
 const RECONCILE_WINDOW = 1000;
@@ -209,7 +210,7 @@ class AccountWorker {
       const summarize = (item) => {
         const summary = summarizeFetched(item, account);
         const headers = item.headers?.toString('utf8') || '';
-        return { ...summary, references: parseReferences(item.headers), trust: classifyTrust({ ...summary, folderRole: folder.role, headers }) };
+        return { ...summary, references: parseReferences(item.headers), trust: classifyTrust({ ...summary, folderRole: folder.role, headers, authServers: trustedAuthServers(account) }) };
       };
       if (!folder.last_uid) {
         const start = Math.max(1, mailbox.exists - INITIAL_WINDOW + 1);
@@ -258,6 +259,7 @@ class AccountWorker {
           const parsed = await parseRawMessage(item.source);
           this.db.setRaw(message.id, item.source, parsed.preview);
           this.db.refreshTrust(message.id, item.source);
+          this.db.verifyTrustLater(message.id, item.source, verifiedDkimDomains);
         }
       } finally {
         lock.release();

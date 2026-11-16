@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { classifyTrust } = require('./core.cjs');
+const { classifyTrust, trustedAuthServers } = require('./core.cjs');
 
 const SCHEMA_VERSION = 2;
 const AUDIT_LIMIT = 1000;
@@ -404,14 +404,28 @@ class Database {
   }
 
   /** Re-check trust once the full message (with every header) is available. */
-  refreshTrust(id, raw) {
-    const header = this.getMessage(id);
+  refreshTrust(id, raw, { dkimDomains = [] } = {}) {
+    const header = this.headers.get(id);
+    if (!header) return false;
     const text = Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw);
     const end = text.search(/\r?\n\r?\n/);
-    const trust = classifyTrust({ subject: header.subject, from: header.from, fromAddress: header.fromAddress, folderRole: header.folderRole, headers: end > 0 ? text.slice(0, end) : text.slice(0, 20000) });
-    if (trust === header.trust) return;
+    let authServers = [];
+    try { authServers = trustedAuthServers(this.getAccount(header.accountId)); } catch { /* account removed */ }
+    const trust = classifyTrust({
+      subject: header.subject, from: header.from, fromAddress: header.fromAddress, folderRole: header.folderRole,
+      headers: end > 0 ? text.slice(0, end) : text.slice(0, 20000), authServers, dkimDomains,
+    });
+    if (trust === header.trust) return false;
     this.db.prepare('UPDATE messages SET trust = ? WHERE id = ?').run(trust, id);
     header.trust = trust;
+    return true;
+  }
+
+  /** Check the DKIM signature in the background, then update the verdict. */
+  verifyTrustLater(id, raw, verify) {
+    verify(raw).then((dkimDomains) => {
+      if (dkimDomains.length) this.refreshTrust(id, raw, { dkimDomains });
+    }).catch(() => {});
   }
 
   /** The assistant's verdict: important or not, with a short encrypted reason. */

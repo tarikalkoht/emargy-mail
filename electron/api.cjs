@@ -93,6 +93,8 @@ async function testImapLogin(account) {
   }
 }
 
+const { verifiedDkimDomains } = require('./dkim.cjs');
+
 function createApi({ db, sync, outbox, emit = () => {} }) {
   const settings = () => ({ ...DEFAULT_SETTINGS, ...db.getSetting('preferences', {}) });
 
@@ -103,6 +105,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       const parsed = await parseRawMessage(raw);
       db.setRaw(message.id, raw, parsed.preview);
       db.refreshTrust(message.id, raw);
+      db.verifyTrustLater(message.id, raw, verifiedDkimDomains);
       return parsed;
     }
     return parseRawMessage(raw);

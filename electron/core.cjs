@@ -70,12 +70,13 @@ function aligned(a, b) {
  * Trust verdict for a message, from the receiving server's own checks:
  *   'spam'       the server's spam filter flagged it, or it sits in Junk
  *   'suspicious' sender authentication failed, or the name imitates a brand the domain does not belong to
- *   'verified'   DKIM passed for the sender's own domain (and DMARC did not fail)
+ *   'verified'   this app verified a DKIM signature of the sender's own domain (see dkim.cjs)
  *   ''           nothing to say
- * Only the topmost Authentication-Results header is used: it is the one added by the
- * receiving server; lower ones could have been written by the sender.
+ * Only the topmost Authentication-Results header is used, and only when its authserv-id
+ * belongs to the reader's own mail provider (`authServers`). Any other one could have been
+ * written by the sender, so it is ignored: no "verified" badge without a trusted server.
  */
-function classifyTrust({ subject = '', from = '', fromAddress = '', folderRole = '', headers = '' } = {}) {
+function classifyTrust({ subject = '', from = '', fromAddress = '', folderRole = '', headers = '', authServers = [], dkimDomains = [] } = {}) {
   const spamFlag = headerValue(headers, 'x-spam-flag');
   const spamStatus = headerValue(headers, 'x-spam-status');
   const spam = headerValue(headers, 'x-spam');
@@ -83,7 +84,10 @@ function classifyTrust({ subject = '', from = '', fromAddress = '', folderRole =
   if (folderRole === 'junk' || /^\s*(\*{3}\s*spam\s*\*{3}|\[spam\]|\{spam\})/i.test(subject)
     || /^yes/i.test(spamFlag) || /^yes/i.test(spamStatus) || /^yes/i.test(spam) || scl >= 5) return 'spam';
 
-  const results = headerValue(headers, 'authentication-results').toLowerCase();
+  const topmost = headerValue(headers, 'authentication-results').toLowerCase();
+  const authservId = topmost.split(';')[0].trim().split(/\s+/)[0] || '';
+  const trusted = authservId && authServers.some((suffix) => authservId === suffix || authservId.endsWith(`.${suffix}`));
+  const results = trusted ? topmost : '';
   const senderDomain = domainOf(fromAddress || from);
   const displayName = String(from).replace(/<[^>]*>/g, '').replace(/"/g, '').trim();
   const nameAddress = displayName.match(/[^\s@<>"]+@[^\s@<>"]+/);
@@ -93,13 +97,35 @@ function classifyTrust({ subject = '', from = '', fromAddress = '', folderRole =
     const brand = displayName.toLowerCase().match(BRANDS)[0].replace(/\s+/g, '');
     if (!senderDomain.includes(brand) && !/admin|support|security|mail ?server|it department|webmail|cpanel|bank|wallet/.test(brand)) return 'suspicious';
   }
-  const dkimDomains = [...results.matchAll(/dkim=pass[^;]*?header\.(?:d|i)=@?([a-z0-9.-]+)/g)].map((m) => m[1]);
-  if (dkimDomains.some((d) => aligned(d, senderDomain)) && !/dmarc=fail/.test(results)) return 'verified';
+  // "Verified" only from a DKIM signature this app checked itself (never from a header text).
+  if (dkimDomains.some((d) => aligned(String(d).toLowerCase(), senderDomain))) return 'verified';
   return '';
+}
+
+/**
+ * Which authserv-ids may speak for this account: the reader's own IMAP server (and its
+ * parent domain, e.g. "hostns.io" for "paloma.hostns.io"), plus the known receiving
+ * servers of big providers whose IMAP host has a different name.
+ */
+function trustedAuthServers(account = {}) {
+  const host = String(account.imapHost || '').toLowerCase().replace(/\.$/, '');
+  const servers = new Set();
+  if (host && !/^\d+\.\d+\.\d+\.\d+$/.test(host) && host.includes('.')) {
+    servers.add(host);
+    const labels = host.split('.');
+    if (labels.length > 2) servers.add(labels.slice(-2).join('.'));
+  }
+  if (/(^|\.)gmail\.com$|(^|\.)google\.com$/.test(host)) servers.add('google.com');
+  if (/office365\.com$|outlook\.com$/.test(host)) { servers.add('outlook.com'); servers.add('office365.com'); }
+  if (/zoho\.(com|eu)$/.test(host)) servers.add('zoho.com').add('zoho.eu');
+  if (/yahoo\.com$/.test(host)) servers.add('yahoo.com');
+  if (/(mail\.me|icloud)\.com$/.test(host)) servers.add('icloud.com').add('apple.com');
+  return [...servers];
 }
 
 module.exports = {
   classifyTrust,
+  trustedAuthServers,
   headerValue,
   formatAddress,
   formatAddressList,

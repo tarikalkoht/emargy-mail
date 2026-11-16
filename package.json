@@ -1,6 +1,6 @@
 {
   "name": "emargy-mail",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Open-source, local-first email client for multiple projects and accounts.",
   "main": "electron/main.cjs",
   "author": "Emargy contributors",
@@ -49,6 +49,7 @@
   "dependencies": {
     "html-to-text": "^10.0.1",
     "imapflow": "^2.11.0",
+    "mailauth": "8.0.6",
     "mailparser": "^3.14.3",
     "nodemailer": "^10.5.0"
   },
