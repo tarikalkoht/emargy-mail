@@ -78,6 +78,11 @@ async function main() {
     await shot('03-signature-editor');
     await page.getByRole('button', { name: 'Save signature' }).click();
     await page.getByRole('tab', { name: 'Accounts' }).click();
+    const toggle = page.locator('.settings-card .card-toggle');
+    await toggle.click();
+    if (await page.getByLabel('Signature for new messages').count()) throw new Error('Account card did not collapse.');
+    await toggle.click();
+    step('account card collapses and expands');
     await page.getByLabel('Signature for new messages').selectOption({ label: 'Work' });
     await page.getByLabel('Signature for replies and forwards').selectOption({ label: 'Work' });
     await page.getByRole('button', { name: 'Save changes' }).click();

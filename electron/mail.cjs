@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const dns = require('node:dns/promises');
+const tls = require('node:tls');
 const { convert } = require('html-to-text');
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
@@ -210,10 +211,10 @@ const MX_RULES = [
 ];
 
 /**
- * Find IMAP/SMTP settings for an address using only DNS (MX and SRV records),
- * so the address is never sent to a third-party lookup service.
+ * Find IMAP/SMTP settings for an address using DNS (MX and SRV records) and direct TLS
+ * probes of the domain's own servers, so the address is never sent to a lookup service.
  */
-async function detectServers(email, resolver = dns) {
+async function detectServers(email, resolver = dns, probe = tlsProbe) {
   const domain = String(email).split('@')[1]?.toLowerCase().trim();
   if (!domain) throw new Error('Email address is not valid.');
   if (DOMAINS[domain]) return { ...PRESETS[DOMAINS[domain]], source: 'known' };
@@ -229,7 +230,41 @@ async function detectServers(email, resolver = dns) {
     const smtp = submissions || submission;
     return { provider: 'custom', imapHost: imaps.name, imapPort: imaps.port, imapSecure: true, smtpHost: smtp.name, smtpPort: smtp.port, smtpSecure: Boolean(submissions), source: 'srv' };
   }
-  return { provider: 'custom', imapHost: `mail.${domain}`, imapPort: 993, imapSecure: true, smtpHost: `mail.${domain}`, smtpPort: 465, smtpSecure: true, source: 'guess' };
+  // Shared hosting (cPanel, Plesk…): the mail server is usually the MX host itself, and
+  // mail.<domain> is often behind a proxy such as Cloudflare. Try real TLS connections and
+  // keep the first host whose certificate is valid for its name.
+  const mxHosts = mx.slice().sort((a, b) => (a.priority || 0) - (b.priority || 0))
+    .map((r) => String(r.exchange || '').replace(/\.$/, '').toLowerCase()).filter(Boolean);
+  const candidates = [...new Set([...mxHosts, `mail.${domain}`, `imap.${domain}`, domain])];
+  const imapHost = await firstReachable(candidates, 993, probe);
+  if (imapHost) {
+    const smtpCandidates = [...new Set([imapHost, ...mxHosts, `mail.${domain}`, `smtp.${domain}`])];
+    const smtp465 = await firstReachable(smtpCandidates, 465, probe);
+    return {
+      provider: 'custom', imapHost, imapPort: 993, imapSecure: true,
+      smtpHost: smtp465 || imapHost, smtpPort: smtp465 ? 465 : 587, smtpSecure: Boolean(smtp465), source: 'probe',
+    };
+  }
+  const fallback = mxHosts[0] || `mail.${domain}`;
+  return { provider: 'custom', imapHost: fallback, imapPort: 993, imapSecure: true, smtpHost: fallback, smtpPort: 465, smtpSecure: true, source: 'guess' };
+}
+
+/** Try candidates in order (all probes run in parallel), return the first that answered. */
+async function firstReachable(hosts, port, probe) {
+  const results = await Promise.all(hosts.map((host) => probe(host, port).then((ok) => ok, () => false)));
+  const index = results.findIndex(Boolean);
+  return index >= 0 ? hosts[index] : null;
+}
+
+/** Open a TLS connection with full certificate checks; nothing is sent, the socket is closed at once. */
+function tlsProbe(host, port, timeout = 5000) {
+  return new Promise((resolve) => {
+    const socket = tls.connect({ host, port, servername: host, minVersion: 'TLSv1.2', timeout });
+    const done = (ok) => { socket.destroy(); resolve(ok); };
+    socket.once('secureConnect', () => done(socket.authorized));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
 }
 
 module.exports = {

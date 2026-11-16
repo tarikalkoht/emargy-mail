@@ -241,7 +241,17 @@ describe('server auto-detection (DNS only)', () => {
   it('uses SRV records, then falls back to mail.<domain>', async () => {
     const srv = { '_imaps._tcp.host.test': [{ name: 'imap.host.test', port: 993, priority: 0 }], '_submission._tcp.host.test': [{ name: 'smtp.host.test', port: 587, priority: 0 }] };
     expect(await detectServers('a@host.test', resolver([], srv))).toMatchObject({ imapHost: 'imap.host.test', smtpHost: 'smtp.host.test', smtpPort: 587, smtpSecure: false });
-    expect(await detectServers('a@other.test', resolver())).toMatchObject({ imapHost: 'mail.other.test', source: 'guess' });
+    expect(await detectServers('a@other.test', resolver(), async () => false)).toMatchObject({ imapHost: 'mail.other.test', source: 'guess' });
+  });
+
+  it('finds a shared-hosting server from the MX host when mail.<domain> is proxied', async () => {
+    const live = new Set(['paloma.hostns.test:993', 'paloma.hostns.test:465']);
+    const probe = async (host, port) => live.has(`${host}:${port}`);
+    expect(await detectServers('info@shop.test', resolver([{ exchange: 'paloma.hostns.test', priority: 0 }]), probe))
+      .toMatchObject({ imapHost: 'paloma.hostns.test', smtpHost: 'paloma.hostns.test', smtpPort: 465, smtpSecure: true, source: 'probe' });
+    // No server answered with a valid certificate: suggest the MX host rather than a blind guess.
+    expect(await detectServers('info@shop.test', resolver([{ exchange: 'mx.shop.test.' }]), async () => false))
+      .toMatchObject({ imapHost: 'mx.shop.test', source: 'guess' });
   });
 });
 

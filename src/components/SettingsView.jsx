@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import RichEditor from './RichEditor';
 import AccountSetup, { ColorPicker, PROJECT_COLORS } from './AccountSetup';
 import Modal from './Modal';
@@ -50,10 +50,12 @@ function General({ t, state, setState, language }) {
   );
 }
 
-function AccountCard({ t, account, state, setState, onToast }) {
+function AccountCard({ t, account, state, setState, onToast, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [form, setForm] = useState({ displayName: account.displayName || '', projectId: account.projectId, signatureNew: account.signatureNew || '', signatureReply: account.signatureReply || '', password: '' });
   const [busy, setBusy] = useState(false);
   const status = account.sync?.status || 'idle';
+  const project = state.projects.find((p) => p.id === account.projectId);
   const save = async () => {
     setBusy(true);
     try {
@@ -71,13 +73,18 @@ function AccountCard({ t, account, state, setState, onToast }) {
     setState(await api.deleteAccount(account.id));
   };
   return (
-    <article className="settings-card">
+    <article className={classNames('settings-card', 'collapsible', open && 'open')}>
       <header>
-        <span className={classNames('status-dot', `s-${status}`)} />
-        <div><strong dir="auto">{account.displayName || account.email}</strong><small>{account.email} · {account.imapHost}</small></div>
-        <button className="icon-button quiet" onClick={() => api.syncAccount(account.id).then(setState).catch((e) => onToast(errorText(e), 'error'))} title={t('syncNow')}><RefreshCw size={15} /></button>
+        <button className="card-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
+          <span className={classNames('status-dot', `s-${status}`)} />
+          <span className="card-title"><strong dir="auto">{account.displayName || account.email}</strong><small>{account.email} · {account.imapHost}</small></span>
+          {project && <span className="project-tag" style={{ '--project': project.color }}>{project.name}</span>}
+          <ChevronDown size={16} className="card-chevron" />
+        </button>
+        <button className="icon-button quiet" onClick={() => api.syncAccount(account.id).then(setState).catch((e) => onToast(errorText(e), 'error'))} title={t('syncNow')} aria-label={t('syncNow')}><RefreshCw size={15} /></button>
       </header>
       {account.sync?.error && <p className="form-error">{account.sync.error}</p>}
+      {open && (<>
       <div className="card-grid">
         <label className="field"><span>{t('yourName')}</span><input dir="auto" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} /></label>
         <label className="field"><span>{t('project')}</span><select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>{state.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
@@ -89,6 +96,7 @@ function AccountCard({ t, account, state, setState, onToast }) {
         <button className="button ghost danger-text" onClick={remove}><Trash2 size={15} />{t('deleteAccount')}</button>
         <button className="button primary" onClick={save} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}{t('saveChanges')}</button>
       </footer>
+      </>)}
     </article>
   );
 }
@@ -191,7 +199,7 @@ export default function SettingsView({ t, state, setState, language, onToast, on
           {tab === 'general' && <General t={t} state={state} setState={setState} language={language} />}
           {tab === 'accounts' && (
             <div className="settings-section">
-              {state.accounts.map((account) => <AccountCard key={account.id} t={t} account={account} state={state} setState={setState} onToast={onToast} />)}
+              {state.accounts.map((account) => <AccountCard key={account.id} t={t} account={account} state={state} setState={setState} onToast={onToast} defaultOpen={state.accounts.length === 1} />)}
               <button className="button primary" onClick={() => setAdding(true)}><Plus size={15} />{t('addAccount')}</button>
             </div>
           )}

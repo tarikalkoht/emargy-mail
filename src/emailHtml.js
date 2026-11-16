@@ -116,5 +116,5 @@ export function prepareEmailHtml(html, { allowRemote = false, inlineImages = {} 
 /* global __FRAME_REPORTER_HASH__ */
 const FRAME_REPORTER_HASH = __FRAME_REPORTER_HASH__;
 
-const FRAME_BODY_CSS = 'font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#20242a;line-height:1.55;margin:0;padding:8px 0 16px;overflow-wrap:anywhere;display:flow-root';
+const FRAME_BODY_CSS = 'font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#20242a;line-height:1.55;margin:0;padding:14px 18px 18px;overflow-wrap:anywhere;display:flow-root';
 const FRAME_CSS = 'img{max-width:100%;height:auto}img[data-blocked]{display:inline-block;min-width:24px;min-height:16px;background:#eef1f5;outline:1px dashed #b7c0cc}a{color:#0b66d4}';

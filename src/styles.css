@@ -374,6 +374,18 @@ button.page-row-main:hover { background: var(--surface-2); }
 .settings-card header div { flex: 1; min-width: 0; display: grid; }
 .settings-card header small { color: var(--muted); font-size: 12.5px; }
 .settings-card footer { display: flex; justify-content: space-between; margin-top: 14px; }
+.settings-card.collapsible { padding: 6px 10px; }
+.settings-card.collapsible.open { padding: 6px 16px 16px; }
+.settings-card.collapsible header { margin: 0; }
+.settings-card.collapsible.open header { margin-bottom: 12px; }
+.card-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 8px 4px; border: 0; background: none; color: inherit; text-align: start; border-radius: 6px; }
+.card-toggle:hover { background: var(--surface-2); }
+.card-title { flex: 1; min-width: 0; display: grid; }
+.card-title strong, .card-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-title small { color: var(--muted); font-size: 12.5px; }
+.card-chevron { color: var(--muted); flex: none; transition: transform .15s ease; }
+.settings-card.open .card-chevron { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .card-chevron { transition: none; } }
 .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
 .field { display: grid; gap: 5px; font-size: 13px; color: var(--ink-2); min-width: 0; }
 .field.wide { grid-column: 1 / -1; }
