@@ -20,7 +20,7 @@ function MessageFrame({ html, title }) {
     return () => window.removeEventListener('message', onMessage);
   }, []);
   // Opaque origin (no allow-same-origin): the email cannot reach the app. Its own scripts
-  // are stripped and blocked by CSP; only the nonce'd height reporter runs.
+  // are stripped and blocked by CSP; only the hash-allowed height reporter runs.
   return <iframe ref={ref} className="message-frame" title={title} style={{ height }} sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={html} />;
 }
 
