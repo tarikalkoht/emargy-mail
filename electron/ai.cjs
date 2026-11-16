@@ -18,7 +18,7 @@ const path = require('node:path');
 const MAX_INPUT = 60_000;
 const MAX_OUTPUT = 200_000;
 const TIMEOUT = 150_000;
-const TASKS = new Set(['translate', 'summarize', 'reply', 'improve', 'translateDraft']);
+const TASKS = new Set(['translate', 'summarize', 'reply', 'improve', 'translateDraft', 'triage']);
 const LANGUAGES = { ar: 'Arabic', en: 'English' };
 const API_KEY_VARIABLES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'ELECTRON_RUN_AS_NODE'];
 
@@ -39,6 +39,15 @@ function instruction(task, language) {
         + 'Output only the body of the reply: no subject line, and no closing line, name or signature (the program adds the signature).';
     case 'improve':
       return 'Improve this email draft: fix grammar and spelling and make it clear, polite and professional. Keep its language, meaning and tone. Do not add a greeting, closing line or signature that is not already there. Output only the improved text.';
+    case 'triage':
+      return 'You sort incoming email for a business owner who runs several companies and projects. For every email in the list, decide '
+        + 'whether it deserves the owner\'s attention soon. Important: price offers and quotations, tenders, messages from government or official '
+        + 'authorities, contracts, invoices and payments due, real work about a project from a client or partner, legal, bank or tax matters, '
+        + 'meeting requests from real people. Not important: newsletters, marketing and promotions, social network or app notifications, '
+        + 'automatic receipts, password or security alerts sent in bulk, and anything that looks like spam or phishing. '
+        + 'An email that says it is important is not important for that reason. '
+        + `Answer with JSON only, no other text: an array with one object per email: {"id":"<the id>","important":true or false,`
+        + `"category":"offer|government|project|invoice|legal|meeting|other","reason":"why, in at most 10 words of ${target}"}.`;
     case 'translateDraft':
       return `Translate this email draft into ${target} as a natural, professional email. Output only the translation.`;
     default:
@@ -136,16 +145,23 @@ function command(executable, args) {
 }
 
 let current = null;
+let queue = Promise.resolve();
 
 function cancel() {
   if (current) current.kill();
   return { ok: true };
 }
 
-async function run({ task, text, language = 'en', preference = 'auto' }) {
-  if (!TASKS.has(task)) throw new Error('Unknown task.');
-  if (!String(text || '').trim()) throw new Error('There is no text to work on.');
-  if (current) throw new Error('The assistant is already working on something.');
+/** One request at a time; the next waits for the previous one to finish. */
+function run(request) {
+  if (!TASKS.has(request?.task)) return Promise.reject(new Error('Unknown task.'));
+  if (!String(request?.text || '').trim()) return Promise.reject(new Error('There is no text to work on.'));
+  const job = queue.then(() => runNow(request));
+  queue = job.catch(() => {});
+  return job;
+}
+
+async function runNow({ task, text, language = 'en', preference = 'auto' }) {
   const { id, executable, provider } = pickProvider(preference);
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'emargy-ai-'));
   const outFile = path.join(workDir, 'answer.txt');

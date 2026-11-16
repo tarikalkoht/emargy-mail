@@ -8,6 +8,8 @@ const { Outbox } = require('./outbox.cjs');
 const { createApi } = require('./api.cjs');
 const ai = require('./ai.cjs');
 const { Updater } = require('./updater.cjs');
+const { ImportanceWatcher } = require('./importance.cjs');
+const { DEFAULT_SETTINGS } = require('./api.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged && !process.env.EMARGY_USE_DIST ? 'http://127.0.0.1:5173' : null);
@@ -20,6 +22,7 @@ let sync;
 let outbox;
 let api;
 let updater;
+let importance;
 
 // A separate data folder for demos and automated tests, so real data is never touched.
 if (process.env.EMARGY_DATA_DIR) app.setPath('userData', path.resolve(process.env.EMARGY_DATA_DIR));
@@ -133,6 +136,7 @@ function registerHandlers() {
   handle('settings:language', (language) => api.setLanguage(language));
   handle('settings:update', (changes) => {
     const result = api.updateSettings(changes);
+    if (changes?.aiAlerts) importance.runOnce().catch(() => {});
     if (changes && 'autoUpdate' in changes) {
       if (result.settings.autoUpdate) updater.start(1000);
       else updater.stop();
@@ -157,6 +161,8 @@ function registerHandlers() {
     if (!pages[key]) throw new Error('Unknown page.');
     return shell.openExternal(pages[key]);
   });
+  handle('importance:status', () => ({ running: importance.running, error: importance.lastError }));
+  handle('importance:run', () => importance.runOnce());
   handle('update:status', () => updater.status);
   handle('update:check', () => updater.check());
   handle('update:install', () => updater.install());
@@ -167,6 +173,8 @@ function registerHandlers() {
   handle('account:add', (input) => api.addAccount(input));
   handle('account:update', (id, changes) => api.updateAccount(id, changes));
   handle('account:delete', (id) => api.deleteAccount(id));
+  handle('account:reorder', (ids) => api.reorderAccounts(ids));
+  handle('messages:allRead', (params) => api.markAllRead(params));
   handle('account:sync', (id) => api.syncAccount(id));
   handle('folder:sync', (id) => api.syncFolder(id));
   handle('sync:all', () => api.syncAll());
@@ -232,6 +240,30 @@ function notifyNewMail({ newInbox = [] }) {
   }).show();
 }
 
+const CATEGORY_LABELS = {
+  ar: { offer: 'عرض', government: 'جهة حكومية', project: 'مشروع', invoice: 'فاتورة', legal: 'قانوني', meeting: 'اجتماع', other: 'مهم' },
+  en: { offer: 'Offer', government: 'Government', project: 'Project', invoice: 'Invoice', legal: 'Legal', meeting: 'Meeting', other: 'Important' },
+};
+
+function notifyImportant(messages) {
+  if (!messages.length || !Notification.isSupported()) return;
+  const arabic = db.getSetting('language', 'en') === 'ar';
+  const first = messages[0];
+  const label = CATEGORY_LABELS[arabic ? 'ar' : 'en'][first.aiNote?.category] || '';
+  const title = messages.length === 1
+    ? (arabic ? `بريد مهم · ${label}` : `Important mail · ${label}`)
+    : (arabic ? `${messages.length} رسائل مهمة تحتاج انتباهك` : `${messages.length} important messages need you`);
+  const notice = new Notification({ title, body: `${first.from} · ${first.subject}
+${first.aiNote?.reason || ''}`.slice(0, 220) });
+  notice.on('click', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    emit('open:message', { id: first.id });
+  });
+  notice.show();
+}
+
 function openStorage() {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Windows data protection is not available, so Emargy Mail cannot store your data securely.');
@@ -274,7 +306,10 @@ app.whenReady().then(() => {
   hardenSession();
   const forward = (channel, payload) => {
     emit(channel, payload);
-    if (channel === 'mail:changed') notifyNewMail(payload);
+    if (channel === 'mail:changed') {
+      notifyNewMail(payload);
+      if (payload?.newInbox?.length) importance?.poke();
+    }
   };
   sync = new SyncManager({ db, emit: forward });
   outbox = new Outbox({ db, sync, emit: forward });
@@ -286,8 +321,17 @@ app.whenReady().then(() => {
     emit: (status) => emit('update:status', status),
     onQuit: () => app.quit(),
   });
+  importance = new ImportanceWatcher({
+    db,
+    ai,
+    settings: () => ({ ...DEFAULT_SETTINGS, ...db.getSetting('preferences', {}) }),
+    language: () => db.getSetting('language', 'en'),
+    emit,
+    notify: notifyImportant,
+  });
   registerHandlers();
   createWindow();
+  setTimeout(() => importance.poke(), 15_000);
   sync.start();
   outbox.start();
   if (api.state().settings.autoUpdate) updater.start();

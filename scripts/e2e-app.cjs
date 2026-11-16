@@ -66,6 +66,40 @@ async function main() {
     await shot('02-inbox-and-privacy');
     step('newsletter opened; images and tracker blocked');
 
+    const spamRow = page.locator('.row', { hasText: 'Unrecognized Login Attempt' });
+    await spamRow.locator('.trust-badge.spam').waitFor();
+    await spamRow.click();
+    await page.locator('.trust-warning.spam').waitFor();
+    await shot('02b-spam-warning');
+    step('spam is labelled in the list and warned about when opened');
+
+    await page.locator('.sidebar').getByRole('button', { name: /^Important/ }).click();
+    await page.locator('.list-title h1', { hasText: 'Important' }).waitFor();
+    await page.locator('.ai-cta').waitFor();
+    await page.waitForFunction(() => !/Unrecognized|Black Friday/.test(document.querySelector('.rows')?.textContent || ''), null, { timeout: 5000 }).catch(() => {});
+    const importantRows = await page.locator('.row').allInnerTexts();
+    if (process.env.E2E_DEBUG) console.log(JSON.stringify(await page.evaluate(() => window.emargy.listMessages({ folderRole: 'inbox', filter: 'important' }).then((r) => r.messages.map((m) => [m.subject, m.trust, m.important, m.aiImportant])))));
+    if (importantRows.some((r) => /Unrecognized|Black Friday/.test(r)) || !importantRows.some((r) => /INV-2026-118/.test(r))) throw new Error(`Important view is wrong: ${importantRows.join(' | ')}`);
+    step(`important view lists ${importantRows.length} messages, without spam, and offers assistant alerts`);
+
+    await page.locator('.row').first().click();
+    await page.locator('.list-head').getByRole('button', { name: 'Select messages' }).click();
+    await page.locator('.list-head.bulk').getByRole('button', { name: 'Mark as read' }).click();
+    await page.locator('.list-head.bulk').waitFor({ state: 'detached' });
+    await page.getByRole('button', { name: 'All inboxes' }).click();
+    await page.locator('.list-head').getByRole('button', { name: 'Mark all as read' }).click();
+    await page.locator('.toast', { hasText: /marked as read|Nothing unread/ }).waitFor();
+    if (await page.locator('.row.unread').count()) throw new Error('Messages still unread after "Mark all as read".');
+    step('select-all, bulk mark-read and mark-all-read work');
+
+    await page.getByRole('button', { name: 'Activity' }).click();
+    await page.locator('.back-button').click();
+    await page.locator('.list-pane').waitFor();
+    await page.getByRole('button', { name: 'Activity' }).click();
+    await page.keyboard.press('Escape');
+    await page.locator('.list-pane').waitFor();
+    step('pages have a way back (button and Esc)');
+
     await page.getByRole('button', { name: 'Settings' }).click();
     await page.getByRole('tab', { name: 'Signatures' }).click();
     await page.getByRole('button', { name: 'New signature' }).click();
@@ -97,6 +131,18 @@ async function main() {
     await shot('03b-google-guide');
     step('Gmail address shows the guided app-password setup');
     await page.getByRole('button', { name: 'Cancel' }).click();
+
+    // Adding from a project only asks for that project's account, and refuses a mailbox that already exists.
+    await page.locator('.sidebar .add-account-line').first().click();
+    await page.locator('.modal', { hasText: 'Add an account to Emargy' }).waitFor();
+    if (await page.locator('.modal form.setup').getByLabel('Project', { exact: true }).count()) throw new Error('Project picker shown inside a project.');
+    await page.locator('.modal form.setup').getByLabel(/Email address/).fill(DEMO_USER);
+    await page.locator('.modal form.setup').getByLabel(/^Password$/).fill(DEMO_PASSWORD);
+    await page.locator('.modal').getByRole('button', { name: 'Connect account' }).click();
+    await page.locator('.modal .form-error', { hasText: 'already added' }).waitFor({ timeout: 20000 });
+    await shot('03c-duplicate');
+    await page.locator('.modal').getByRole('button', { name: 'Cancel' }).click();
+    step('adding from a project hides other projects and refuses a duplicate mailbox');
     await page.getByRole('tab', { name: 'General' }).click();
     await page.getByRole('button', { name: 'Check now' }).waitFor();
     await page.locator('.setting-row strong', { hasText: /^Version \d+\.\d+\.\d+$/ }).waitFor({ timeout: 5000 });

@@ -1,7 +1,14 @@
-import { Archive, Flag, Inbox, LoaderCircle, Mail, MailOpen, Paperclip, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { Archive, BadgeCheck, CheckCheck, Flag, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, Paperclip, RefreshCw, Search, ShieldAlert, Sparkles, Trash2, X } from 'lucide-react';
 import { classNames, displayName, formatListDate } from '../lib/format';
 
-const FILTERS = ['all', 'unread', 'flagged', 'attachments'];
+const FILTERS = ['all', 'unread', 'important', 'flagged', 'attachments', 'spam'];
+
+export function TrustBadge({ trust, t }) {
+  if (trust === 'spam') return <span className="trust-badge spam" title={t('trustSpamHint')}><ShieldAlert size={12} />{t('trustSpam')}</span>;
+  if (trust === 'suspicious') return <span className="trust-badge suspicious" title={t('trustSuspiciousHint')}><ShieldAlert size={12} />{t('trustSuspicious')}</span>;
+  if (trust === 'verified') return <span className="trust-verified" title={t('trustVerifiedHint')} aria-label={t('trustVerified')}><BadgeCheck size={14} /></span>;
+  return null;
+}
 
 function Row({ message, project, account, showAccount, active, selected, selecting, language, t, onOpen, onToggle, onAction }) {
   const unread = message.threadUnread ?? !message.read;
@@ -12,7 +19,7 @@ function Row({ message, project, account, showAccount, active, selected, selecti
       role="option"
       aria-selected={active}
       tabIndex={-1}
-      className={classNames('row', unread && 'unread', active && 'active', selected && 'selected')}
+      className={classNames('row', unread && 'unread', active && 'active', selected && 'selected', ['spam', 'suspicious'].includes(message.trust) && 'untrusted')}
       style={{ '--project': project?.color || 'var(--line-strong)' }}
       onClick={(event) => onOpen(message, event)}
     >
@@ -23,9 +30,13 @@ function Row({ message, project, account, showAccount, active, selected, selecti
       <div className="row-main">
         <div className="row-top">
           <span className="row-from" dir="auto">{who}</span>
+          <TrustBadge trust={message.trust} t={t} />
           {message.threadCount > 1 && <span className="row-count">{message.threadCount}</span>}
           <time>{formatListDate(message.date, language)}</time>
         </div>
+        {message.aiImportant && message.aiNote && !['spam', 'suspicious'].includes(message.trust) && (
+          <div className="row-ai" title={message.aiNote.reason}><Sparkles size={12} /><strong>{t(`category_${message.aiNote.category}`)}</strong><span dir="auto">{message.aiNote.reason}</span></div>
+        )}
         <div className="row-subject" dir="auto">
           {flagged && <Flag size={13} className="flag-icon" />}
           {message.hasAttachments && <Paperclip size={13} className="clip-icon" />}
@@ -51,9 +62,11 @@ function Row({ message, project, account, showAccount, active, selected, selecti
 
 export default function MessageList({
   t, language, title, list, projectsById, accountsById, showAccount, selectedId, selection, onOpen, onToggle, onClearSelection,
-  onAction, onBulk, onLoadMore, search, onSearch, filter, onFilter, onSync, syncing, searchRef,
+  onAction, onBulk, onLoadMore, search, onSearch, filter, onFilter, onSync, syncing, searchRef, onSelectAll, onMarkAllRead,
+  importantView, aiAlerts, onEnableAlerts,
 }) {
   const selecting = selection.size > 0;
+  const allSelected = list.messages.length > 0 && list.messages.every((m) => selection.has(m.id));
   return (
     <section className="list-pane" aria-label={title}>
       <div className="list-search">
@@ -63,14 +76,17 @@ export default function MessageList({
       </div>
       {selecting ? (
         <div className="list-head bulk">
-          <button className="icon-button quiet" onClick={onClearSelection} aria-label={t('clear')}><X size={16} /></button>
+          <label className="select-all" title={t('selectAll')}>
+            <input type="checkbox" checked={allSelected} onChange={() => (allSelected ? onClearSelection() : onSelectAll())} aria-label={t('selectAll')} />
+          </label>
           <strong>{t('selectedCount', { n: selection.size })}</strong>
           <span className="bulk-actions">
-            <button className="icon-button quiet" onClick={() => onBulk('archive')} title={t('archive')}><Archive size={16} /></button>
-            <button className="icon-button quiet" onClick={() => onBulk('trash')} title={t('delete')}><Trash2 size={16} /></button>
-            <button className="icon-button quiet" onClick={() => onBulk('read')} title={t('markRead')}><MailOpen size={16} /></button>
-            <button className="icon-button quiet" onClick={() => onBulk('unread')} title={t('markUnread')}><Mail size={16} /></button>
-            <button className="icon-button quiet" onClick={() => onBulk('flag')} title={t('flag')}><Flag size={16} /></button>
+            <button className="button ghost small" onClick={() => onBulk('read')}><MailOpen size={15} />{t('markRead')}</button>
+            <button className="icon-button quiet" onClick={() => onBulk('unread')} title={t('markUnread')} aria-label={t('markUnread')}><Mail size={16} /></button>
+            <button className="icon-button quiet" onClick={() => onBulk('archive')} title={t('archive')} aria-label={t('archive')}><Archive size={16} /></button>
+            <button className="icon-button quiet" onClick={() => onBulk('trash')} title={t('delete')} aria-label={t('delete')}><Trash2 size={16} /></button>
+            <button className="icon-button quiet" onClick={() => onBulk('flag')} title={t('flag')} aria-label={t('flag')}><Flag size={16} /></button>
+            <button className="icon-button quiet" onClick={onClearSelection} title={t('clear')} aria-label={t('clear')}><X size={16} /></button>
           </span>
         </div>
       ) : (
@@ -79,11 +95,20 @@ export default function MessageList({
             <h1 dir="auto">{title}</h1>
             <span>{search ? t('resultsCount', { n: list.total }) : t('conversationsCount', { n: list.total })}</span>
           </div>
+          <button className="icon-button quiet" onClick={onSelectAll} disabled={!list.messages.length} title={t('selectMessages')} aria-label={t('selectMessages')}><ListChecks size={16} /></button>
+          <button className="icon-button quiet" onClick={onMarkAllRead} title={t('markAllRead')} aria-label={t('markAllRead')}><CheckCheck size={16} /></button>
           <button className="icon-button quiet" onClick={onSync} title={t('syncNow')} aria-label={t('syncNow')}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</button>
         </div>
       )}
+      {importantView && !aiAlerts && (
+        <div className="ai-cta">
+          <Sparkles size={16} />
+          <span>{t('aiAlertsCta')}</span>
+          <button className="button primary small" onClick={onEnableAlerts}>{t('aiAlertsEnable')}</button>
+        </div>
+      )}
       <div className="filters" role="tablist">
-        {FILTERS.map((key) => <button key={key} role="tab" aria-selected={filter === key} className={classNames(filter === key && 'on')} onClick={() => onFilter(key)}>{t(`filter_${key}`)}</button>)}
+        {(importantView ? [] : FILTERS).map((key) => <button key={key} role="tab" aria-selected={filter === key} className={classNames(filter === key && 'on')} onClick={() => onFilter(key)}>{t(`filter_${key}`)}</button>)}
       </div>
       <div className="rows" role="listbox" aria-label={title}>
         {list.messages.map((message) => (

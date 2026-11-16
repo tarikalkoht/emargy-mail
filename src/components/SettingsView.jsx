@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, ChevronDown, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import RichEditor from './RichEditor';
-import AccountSetup, { ColorPicker, PROJECT_COLORS } from './AccountSetup';
-import Modal from './Modal';
+import { ColorPicker, PROJECT_COLORS } from './AccountSetup';
 import { classNames } from '../lib/format';
 
 const api = window.emargy;
@@ -94,12 +93,13 @@ function General({ t, state, setState, language }) {
       <Toggle label={t('markReadOnOpen')} checked={s.markReadOnOpen} onChange={(v) => update({ markReadOnOpen: v })} />
       <Toggle label={t('notifications')} hint={t('notificationsHint')} checked={s.notifications} onChange={(v) => update({ notifications: v })} />
       <AiSetting t={t} value={s.aiProvider || 'auto'} onChange={(v) => update({ aiProvider: v })} />
+      <Toggle label={t('aiAlerts')} hint={t('aiAlertsHint')} checked={Boolean(s.aiAlerts)} onChange={(v) => update({ aiAlerts: v })} />
       <UpdateSetting t={t} enabled={s.autoUpdate !== false} onChange={(v) => update({ autoUpdate: v })} />
     </div>
   );
 }
 
-function AccountCard({ t, account, state, setState, onToast, defaultOpen }) {
+function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove, first, last }) {
   const [open, setOpen] = useState(defaultOpen);
   const [form, setForm] = useState({ displayName: account.displayName || '', projectId: account.projectId, signatureNew: account.signatureNew || '', signatureReply: account.signatureReply || '', password: '' });
   const [busy, setBusy] = useState(false);
@@ -130,6 +130,8 @@ function AccountCard({ t, account, state, setState, onToast, defaultOpen }) {
           {project && <span className="project-tag" style={{ '--project': project.color }}>{project.name}</span>}
           <ChevronDown size={16} className="card-chevron" />
         </button>
+        <button className="icon-button quiet" disabled={first} onClick={() => onMove(-1)} title={t('moveUp')} aria-label={t('moveUp')}><ArrowUp size={15} /></button>
+        <button className="icon-button quiet" disabled={last} onClick={() => onMove(1)} title={t('moveDown')} aria-label={t('moveDown')}><ArrowDown size={15} /></button>
         <button className="icon-button quiet" onClick={() => api.syncAccount(account.id).then(setState).catch((e) => onToast(errorText(e), 'error'))} title={t('syncNow')} aria-label={t('syncNow')}><RefreshCw size={15} /></button>
       </header>
       {account.sync?.error && <p className="form-error">{account.sync.error}</p>}
@@ -234,9 +236,52 @@ function Security({ t, onView }) {
   );
 }
 
-export default function SettingsView({ t, state, setState, language, onToast, onView, initialTab = 'general' }) {
+function AccountsByProject({ t, state, setState, onToast, onAddAccount }) {
+  // Move an account one place up or down inside its own project.
+  const move = async (account, step) => {
+    const siblings = state.accounts.filter((a) => a.projectId === account.projectId);
+    const target = siblings[siblings.findIndex((a) => a.id === account.id) + step];
+    if (!target) return;
+    const ids = state.accounts.map((a) => a.id);
+    const [from, to] = [ids.indexOf(account.id), ids.indexOf(target.id)];
+    [ids[from], ids[to]] = [ids[to], ids[from]];
+    setState(await api.reorderAccounts(ids));
+  };
+  return (
+    <div className="settings-section">
+      {state.projects.map((project) => {
+        const accounts = state.accounts.filter((a) => a.projectId === project.id);
+        return (
+          <section key={project.id} className="project-accounts" style={{ '--project': project.color }}>
+            <header>
+              <span className="project-tag">{project.name}</span>
+              <small>{t('accountsCount', { n: accounts.length })}</small>
+              <button className="button ghost small" onClick={() => onAddAccount(project.id)}><Plus size={14} />{t('addAccount')}</button>
+            </header>
+            {accounts.map((account, index) => (
+              <AccountCard
+                key={account.id}
+                t={t}
+                account={account}
+                state={state}
+                setState={setState}
+                onToast={onToast}
+                defaultOpen={state.accounts.length === 1}
+                first={index === 0}
+                last={index === accounts.length - 1}
+                onMove={(step) => move(account, step).catch((e) => onToast(errorText(e), 'error'))}
+              />
+            ))}
+            {!accounts.length && <p className="muted empty-note">{t('noAccountsInProject')}</p>}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function SettingsView({ t, state, setState, language, onToast, onView, onAddAccount, initialTab = 'general' }) {
   const [tab, setTab] = useState(initialTab);
-  const [adding, setAdding] = useState(false);
   return (
     <div className="page">
       <header className="page-head"><h1>{t('settings')}</h1></header>
@@ -246,22 +291,12 @@ export default function SettingsView({ t, state, setState, language, onToast, on
         </div>
         <div className="settings-panel">
           {tab === 'general' && <General t={t} state={state} setState={setState} language={language} />}
-          {tab === 'accounts' && (
-            <div className="settings-section">
-              {state.accounts.map((account) => <AccountCard key={account.id} t={t} account={account} state={state} setState={setState} onToast={onToast} defaultOpen={state.accounts.length === 1} />)}
-              <button className="button primary" onClick={() => setAdding(true)}><Plus size={15} />{t('addAccount')}</button>
-            </div>
-          )}
+          {tab === 'accounts' && <AccountsByProject t={t} state={state} setState={setState} onToast={onToast} onAddAccount={onAddAccount} />}
           {tab === 'signatures' && <Signatures t={t} state={state} setState={setState} onToast={onToast} />}
           {tab === 'projects' && <Projects t={t} state={state} setState={setState} onToast={onToast} />}
           {tab === 'security' && <Security t={t} onView={onView} />}
         </div>
       </div>
-      {adding && (
-        <Modal title={t('addAccount')} onClose={() => setAdding(false)} width="560px">
-          <div className="modal-body"><AccountSetup t={t} projects={state.projects} onCancel={() => setAdding(false)} onDone={(next) => { setState(next); setAdding(false); }} /></div>
-        </Modal>
-      )}
     </div>
   );
 }

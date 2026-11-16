@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, Sparkles, Trash2,
+  Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Trash2,
 } from 'lucide-react';
+import { TrustBadge } from './MessageList';
 import AiPanel from './AiPanel';
 import { prepareEmailHtml, sanitizeForEditor } from '../emailHtml';
 import { classNames, displayName, escapeHtml, formatFullDate, formatListDate, formatSize, initial, paragraphsToHtml, parseAddresses, senderHue, textToHtml } from '../lib/format';
@@ -29,7 +30,7 @@ function Avatar({ value, size = 36 }) {
   return <span className="avatar" style={{ '--hue': senderHue(value), width: size, height: size }} aria-hidden="true">{initial(value)}</span>;
 }
 
-function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate }) {
+function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate, onMoveToJunk }) {
   const [showOnce, setShowOnce] = useState(false);
   const [details, setDetails] = useState(false);
   const content = message.content;
@@ -55,6 +56,7 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
           <button className="sender-line" onClick={onToggle}>
             <strong dir="auto">{sender?.name || sender?.address || content.from}</strong>
             {sender?.name && <span className="sender-address">{sender.address}</span>}
+            <TrustBadge trust={message.trust} t={t} />
           </button>
           <button className="recipients-line" onClick={() => setDetails(!details)} dir="auto">
             {t('toLabel')} {parseAddresses(content.to).map((a) => a.name || a.address).join(', ') || '—'}<ChevronDown size={13} />
@@ -73,6 +75,16 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
         <button className="icon-button quiet" onClick={() => onTranslate(message)} title={t('aiTranslate')} aria-label={t('aiTranslate')}><Languages size={16} /></button>
         <button className="icon-button quiet" onClick={() => onReply('reply', message)} title={t('reply')} aria-label={t('reply')}><Reply size={16} /></button>
       </header>
+      {['spam', 'suspicious'].includes(message.trust) && (
+        <div className={classNames('trust-warning', message.trust)} role="alert">
+          <ShieldAlert size={17} />
+          <span>{t(message.trust === 'spam' ? 'spamWarning' : 'suspiciousWarning')}</span>
+          {onMoveToJunk && <button onClick={() => onMoveToJunk(message)}>{t('moveToJunk')}</button>}
+        </div>
+      )}
+      {message.aiImportant && message.aiNote && !['spam', 'suspicious'].includes(message.trust) && (
+        <div className="ai-note"><Sparkles size={15} /><strong>{t(`category_${message.aiNote.category}`)}</strong><span dir="auto">{message.aiNote.reason}</span></div>
+      )}
       {prepared?.blockedCount > 0 && !allowRemote && (
         <div className="privacy-note">
           <ImageOff size={16} />
@@ -250,6 +262,10 @@ export default function ThreadView({ t, language, thread, loading, project, acco
               onTrustSender={onTrustSender}
               onReply={onReply}
               onTranslate={(m) => translate(m)}
+              onMoveToJunk={(() => {
+                const junk = folders.find((f) => f.accountId === message.accountId && f.role === 'junk');
+                return junk && message.folderId !== junk.id ? () => onAction('move', [message.id], junk.id) : null;
+              })()}
             />
           ))}
         </div>

@@ -162,7 +162,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .list-head.bulk { background: var(--accent-soft); }
 .list-head.bulk strong { flex: 1; }
 .bulk-actions { display: flex; gap: 2px; }
-.filters { display: flex; gap: 4px; padding: 2px 12px 8px; border-bottom: 1px solid var(--line); }
+.filters { display: flex; flex-wrap: wrap; gap: 4px 4px; padding: 2px 12px 8px; border-bottom: 1px solid var(--line); }
 .filters button { height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--line); background: transparent; color: var(--ink-2); font-size: 12.5px; }
 .filters button:hover { border-color: var(--line-strong); }
 .filters button.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }
@@ -477,3 +477,55 @@ button.page-row-main:hover { background: var(--surface-2); }
 .update-banner { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px 8px; margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); font-size: 13px; }
 .update-banner svg { color: var(--accent); }
 .update-banner .button { grid-column: 1 / -1; justify-content: center; }
+
+/* Brand */
+.logo { display: block; flex: none; }
+.brand { display: flex; align-items: center; gap: 9px; padding: 2px 6px 12px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--ink); }
+.welcome-brand .logo { border-radius: 9px; }
+
+/* Pages with a way back */
+.page-shell { grid-column: 2 / -1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+.page-shell .page { grid-column: auto; flex: 1; padding-top: 12px; }
+.back-button { align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; margin: 16px clamp(20px, 4vw, 48px) 0; padding: 6px 12px 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink-2); font-size: 13px; }
+.back-button:hover { border-color: var(--accent); color: var(--ink); }
+:root[dir='rtl'] .flip-rtl { transform: scaleX(-1); }
+
+/* Accounts grouped by project */
+.project-accounts { display: grid; gap: 8px; margin-bottom: 22px; }
+.project-accounts > header { display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; }
+.project-accounts > header small { flex: 1; color: var(--muted); font-size: 12.5px; }
+.project-accounts .settings-card { margin-bottom: 0; }
+.empty-note { margin: 0; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; font-size: 13px; }
+
+/* Reorder accounts by dragging */
+.tree-account[draggable='true'] { cursor: grab; }
+.tree-account.dragging { opacity: .45; }
+.tree-account.drop-target { box-shadow: inset 0 2px 0 var(--accent); border-radius: 4px; }
+
+/* Selection */
+.select-all { display: grid; place-items: center; width: 32px; height: 32px; }
+.select-all input { width: 16px; height: 16px; accent-color: var(--accent); }
+.bulk-actions { align-items: center; }
+
+/* Trust and importance */
+.trust-badge { display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 600; flex: none; }
+.trust-badge.spam { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.trust-badge.suspicious { background: var(--warn-soft); color: var(--warn); }
+.trust-verified { display: inline-flex; color: var(--accent); flex: none; }
+.row.untrusted .row-subject, .row.untrusted .row-preview, .row.untrusted .row-from { opacity: .62; }
+.row-ai { display: flex; align-items: center; gap: 5px; margin: 1px 0 2px; font-size: 12px; color: var(--accent); min-width: 0; }
+.row-ai strong { font-weight: 600; flex: none; }
+.row-ai span { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trust-warning { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 4px 16px 8px; padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.6; color: var(--ink); }
+.trust-warning.spam { background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); }
+.trust-warning.suspicious { background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.trust-warning svg { color: var(--danger); flex: none; }
+.trust-warning.suspicious svg { color: var(--warn); }
+.trust-warning span { flex: 1; min-width: 200px; }
+.trust-warning button { border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); padding: 4px 10px; font-size: 12.5px; color: var(--ink-2); }
+.ai-note { display: flex; align-items: center; gap: 7px; margin: 4px 16px 8px; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; color: var(--ink); }
+.ai-note svg { color: var(--accent); flex: none; }
+.ai-cta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 0 12px 8px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; color: var(--ink); line-height: 1.5; }
+.ai-cta svg { color: var(--accent); flex: none; }
+.ai-cta span { flex: 1; min-width: 180px; }
+.nav-item.important svg { color: var(--accent); }

@@ -1,6 +1,6 @@
 {
   "name": "emargy-mail",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Open-source, local-first email client for multiple projects and accounts.",
   "main": "electron/main.cjs",
   "author": "Emargy contributors",
@@ -32,7 +32,8 @@
         "nsis",
         "portable"
       ],
-      "artifactName": "Emargy-Mail-${version}-${arch}.${ext}"
+      "artifactName": "Emargy-Mail-${version}-${arch}.${ext}",
+      "icon": "build/icon.png"
     },
     "portable": {
       "artifactName": "Emargy-Mail-Portable-${version}.${ext}"

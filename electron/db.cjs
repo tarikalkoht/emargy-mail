@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const { classifyTrust } = require('./core.cjs');
 
 const SCHEMA_VERSION = 2;
 const AUDIT_LIMIT = 1000;
@@ -93,6 +94,12 @@ function parseAddressList(value = '') {
   return result;
 }
 
+/** Important = the assistant said so, or important words in a message that is not spam or suspicious. */
+function isImportantMessage(m) {
+  if (['spam', 'suspicious'].includes(m.trust)) return false;
+  return Boolean(m.aiImportant || m.important);
+}
+
 function threadRoot(header, id) {
   const references = String(header.references || '').match(/<[^>]+>/g) || [];
   return references[0] || header.inReplyTo || header.messageId || id;
@@ -114,6 +121,12 @@ class Database {
     const columns = (table) => new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
     if (!columns('folders').has('name')) this.db.exec('ALTER TABLE folders ADD COLUMN name TEXT');
     if (!columns('messages').has('thread_key')) this.db.exec('ALTER TABLE messages ADD COLUMN thread_key TEXT');
+    if (!columns('accounts').has('sort_order')) this.db.exec('ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+    // Spam / trust verdict from the server's own filter and the sender authentication results.
+    if (!columns('messages').has('trust')) this.db.exec("ALTER TABLE messages ADD COLUMN trust TEXT NOT NULL DEFAULT ''");
+    if (!columns('messages').has('ai_important')) this.db.exec('ALTER TABLE messages ADD COLUMN ai_important INTEGER NOT NULL DEFAULT 0');
+    if (!columns('messages').has('ai_checked')) this.db.exec('ALTER TABLE messages ADD COLUMN ai_checked INTEGER NOT NULL DEFAULT 0');
+    if (!columns('messages').has('ai_note')) this.db.exec('ALTER TABLE messages ADD COLUMN ai_note BLOB');
     this.db.exec('CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_key)');
   }
 
@@ -168,7 +181,7 @@ class Database {
 
   // Accounts -----------------------------------------------------------------
   listAccounts({ withSecrets = false } = {}) {
-    return this.db.prepare('SELECT id, project_id, created_at, data FROM accounts ORDER BY created_at').all()
+    return this.db.prepare('SELECT id, project_id, created_at, data FROM accounts ORDER BY sort_order, created_at').all()
       .map((row) => this.decodeAccount(row, withSecrets));
   }
 
@@ -187,9 +200,19 @@ class Database {
 
   createAccount(account, id = this.id(), createdAt = Date.now()) {
     const { projectId, ...data } = account;
-    this.db.prepare('INSERT INTO accounts (id, project_id, created_at, data) VALUES (?, ?, ?, ?)')
-      .run(id, projectId, createdAt, this.vault.encryptJson(data));
+    const next = this.db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM accounts').get().n;
+    this.db.prepare('INSERT INTO accounts (id, project_id, created_at, data, sort_order) VALUES (?, ?, ?, ?, ?)')
+      .run(id, projectId, createdAt, this.vault.encryptJson(data), next);
     return id;
+  }
+
+  /** Save the order the reader arranged; ids not listed keep their place after the listed ones. */
+  reorderAccounts(ids) {
+    const known = new Set(this.db.prepare('SELECT id FROM accounts').all().map((r) => r.id));
+    const ordered = [...new Set(ids.filter((id) => known.has(id)))];
+    const rest = this.listAccounts().map((a) => a.id).filter((id) => !ordered.includes(id));
+    const update = this.db.prepare('UPDATE accounts SET sort_order = ? WHERE id = ?');
+    this.transaction(() => [...ordered, ...rest].forEach((id, index) => update.run(index + 1, id)));
   }
 
   updateAccount(id, changes) {
@@ -261,7 +284,7 @@ class Database {
   loadHeaderCache() {
     this.headers = new Map();
     const rows = this.db.prepare(`SELECT m.id, m.account_id, m.project_id, m.folder_id, m.uid, m.date, m.seen, m.flagged,
-      m.important, m.has_attachments, m.size, m.header, m.thread_key, m.raw IS NOT NULL AS cached, f.role
+      m.important, m.has_attachments, m.size, m.header, m.thread_key, m.trust, m.ai_important, m.ai_note, m.ai_checked, m.raw IS NOT NULL AS cached, f.role
       FROM messages m JOIN folders f ON f.id = m.folder_id`).all();
     for (const row of rows) this.cacheHeader(row);
     this.sortHeaders();
@@ -287,6 +310,11 @@ class Database {
       ...header,
     };
     entry.threadKey = row.thread_key || this.vault.fingerprint(threadRoot(header, row.id));
+    // Older rows have no stored verdict yet: the subject and folder already tell spam apart.
+    entry.trust = row.trust || classifyTrust({ subject: header.subject, from: header.from, fromAddress: header.fromAddress, folderRole: row.role });
+    entry.aiImportant = Boolean(row.ai_important);
+    entry.aiChecked = Boolean(row.ai_checked);
+    entry.aiNote = row.ai_note ? this.vault.decryptJson(row.ai_note) : null;
     entry.search = searchText(entry);
     this.headers.set(row.id, entry);
     return entry;
@@ -299,8 +327,8 @@ class Database {
   insertMessages(folder, messages) {
     if (!messages.length) return [];
     const insert = this.db.prepare(`INSERT OR IGNORE INTO messages
-      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, thread_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, thread_key, trust)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const added = [];
     this.transaction(() => {
       for (const message of messages) {
@@ -314,9 +342,10 @@ class Database {
           date: message.dateValue, seen: message.read ? 1 : 0, flagged: message.flagged ? 1 : 0, important: message.important ? 1 : 0,
           has_attachments: message.hasAttachments ? 1 : 0, size: message.size || 0, header: this.vault.encryptJson(header),
           thread_key: this.vault.fingerprint(threadRoot(header, id)),
+          trust: message.trust || '',
         };
         const result = insert.run(row.id, row.account_id, row.project_id, row.folder_id, row.uid, row.date, row.seen, row.flagged,
-          row.important, row.has_attachments, row.size, row.header, row.thread_key);
+          row.important, row.has_attachments, row.size, row.header, row.thread_key, row.trust);
         if (result.changes) added.push(this.cacheHeader({ ...row, cached: 0, role: folder.role }));
       }
     });
@@ -374,6 +403,34 @@ class Database {
     header.search = searchText(header);
   }
 
+  /** Re-check trust once the full message (with every header) is available. */
+  refreshTrust(id, raw) {
+    const header = this.getMessage(id);
+    const text = Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw);
+    const end = text.search(/\r?\n\r?\n/);
+    const trust = classifyTrust({ subject: header.subject, from: header.from, fromAddress: header.fromAddress, folderRole: header.folderRole, headers: end > 0 ? text.slice(0, end) : text.slice(0, 20000) });
+    if (trust === header.trust) return;
+    this.db.prepare('UPDATE messages SET trust = ? WHERE id = ?').run(trust, id);
+    header.trust = trust;
+  }
+
+  /** The assistant's verdict: important or not, with a short encrypted reason. */
+  setAiVerdict(id, { important, category = '', reason = '' }) {
+    const header = this.getMessage(id);
+    const note = important ? { category, reason } : null;
+    this.db.prepare('UPDATE messages SET ai_checked = 1, ai_important = ?, ai_note = ? WHERE id = ?')
+      .run(important ? 1 : 0, note ? this.vault.encryptJson(note) : null, id);
+    header.aiImportant = Boolean(important);
+    header.aiNote = note;
+    header.aiChecked = true;
+  }
+
+  /** Recent inbox messages the assistant has not looked at yet (spam and suspicious mail are skipped). */
+  messagesForTriage(sinceMs, limit = 25) {
+    return this.sorted.filter((m) => m.folderRole === 'inbox' && m.dateValue >= sinceMs && !m.aiChecked
+      && !['spam', 'suspicious'].includes(m.trust)).slice(0, limit);
+  }
+
   setSeen(id, seen) {
     const header = this.getMessage(id);
     this.db.prepare('UPDATE messages SET seen = ? WHERE id = ?').run(seen ? 1 : 0, id);
@@ -402,7 +459,8 @@ class Database {
       if (projectId !== 'all' && m.projectId !== projectId) return false;
       if (accountId !== 'all' && m.accountId !== accountId) return false;
       if (filter === 'unread' && m.read) return false;
-      if (filter === 'important' && !m.important) return false;
+      if (filter === 'important' && !isImportantMessage(m)) return false;
+      if (filter === 'spam' && !['spam', 'suspicious'].includes(m.trust)) return false;
       if (filter === 'flagged' && !m.flagged) return false;
       if (filter === 'attachments' && !m.hasAttachments) return false;
       return !needle || m.search.includes(needle);
@@ -490,10 +548,12 @@ class Database {
   }
 
   unreadCounts() {
-    const counts = { total: 0, projects: {}, accounts: {} };
+    const counts = { total: 0, projects: {}, accounts: {}, important: 0 };
     for (const message of this.sorted) {
-      if (message.read || message.folderRole !== 'inbox') continue;
+      // Spam is not counted: it should not make a mailbox look busy.
+      if (message.read || message.folderRole !== 'inbox' || message.trust === 'spam') continue;
       counts.total += 1;
+      if (isImportantMessage(message)) counts.important += 1;
       counts.projects[message.projectId] = (counts.projects[message.projectId] || 0) + 1;
       counts.accounts[message.accountId] = (counts.accounts[message.accountId] || 0) + 1;
     }

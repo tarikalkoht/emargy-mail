@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Check, LoaderCircle, Mail } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, LoaderCircle, Mail } from 'lucide-react';
+import Modal from './components/Modal';
+import Logo from './components/Logo';
 import { translator } from './i18n';
 import Sidebar from './components/Sidebar';
 import MessageList from './components/MessageList';
@@ -17,7 +19,10 @@ const errorText = (error) => String(error?.message || error).replace(/^Error inv
 
 function scopeParams(scope) {
   switch (scope.kind) {
-    case 'unified': return scope.role === 'flagged' ? { folderRole: 'any', forcedFilter: 'flagged' } : { folderRole: scope.role };
+    case 'unified':
+      if (scope.role === 'flagged') return { folderRole: 'any', forcedFilter: 'flagged' };
+      if (scope.role === 'important') return { folderRole: 'inbox', forcedFilter: 'important' };
+      return { folderRole: scope.role };
     case 'project': return { projectId: scope.projectId, folderRole: 'inbox' };
     case 'account': return { accountId: scope.accountId, folderRole: 'inbox' };
     case 'folder': return { folderId: scope.folderId };
@@ -64,6 +69,7 @@ export default function App() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [composer, setComposer] = useState(null);
   const [update, setUpdate] = useState(null);
+  const [addingTo, setAddingTo] = useState(null);
   const [toast, setToast] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const toastTimer = useRef(null);
@@ -89,9 +95,13 @@ export default function App() {
   }, [showToast]);
 
   const params = scopeParams(scope);
+  const listRequest = useRef(0);
   const refreshList = useCallback(async () => {
     const { forcedFilter, ...rest } = scopeParams(scope);
+    // A slower answer for a view you already left must not replace the current list.
+    const request = ++listRequest.current;
     const result = await api.listMessages({ ...rest, filter: forcedFilter || filter, query, limit });
+    if (request !== listRequest.current) return;
     setList(result);
   }, [scope, filter, query, limit]);
   const refreshState = useCallback(async () => setState(await api.getState()), []);
@@ -111,8 +121,14 @@ export default function App() {
     const offMail = api.onMailChanged(() => { refreshList().catch(() => {}); refreshState().catch(() => {}); });
     const offOutbox = api.onOutboxChanged(() => refreshState().catch(() => {}));
     const offUpdate = api.onUpdateStatus(setUpdate);
+    // Clicking an "important mail" notification opens that message.
+    const offOpen = api.onOpenMessage(({ id }) => {
+      setView('mail');
+      setScope({ kind: 'unified', role: 'important' });
+      openThreadRef.current?.({ id });
+    });
     api.updateStatus().then(setUpdate).catch(() => {});
-    return () => { offStatus(); offMail(); offOutbox(); offUpdate(); };
+    return () => { offStatus(); offMail(); offOutbox(); offUpdate(); offOpen(); };
   }, [refreshList, refreshState]);
 
   // Theme, density and direction.
@@ -142,7 +158,7 @@ export default function App() {
   const foldersById = useMemo(() => Object.fromEntries(state.folders.map((f) => [f.id, f])), [state.folders]);
 
   const title = useMemo(() => {
-    if (scope.kind === 'unified') return { inbox: t('allInboxes'), flagged: t('flagged'), sent: t('allSent') }[scope.role];
+    if (scope.kind === 'unified') return { inbox: t('allInboxes'), flagged: t('flagged'), sent: t('allSent'), important: t('importantMail') }[scope.role];
     if (scope.kind === 'project') return projectsById[scope.projectId]?.name || '';
     if (scope.kind === 'account') return accountsById[scope.accountId]?.displayName || accountsById[scope.accountId]?.email || '';
     const folder = foldersById[scope.folderId];
@@ -171,6 +187,9 @@ export default function App() {
       refreshState().catch(() => {});
     }
   };
+
+  const openThreadRef = useRef(null);
+  openThreadRef.current = openThread;
 
   const onRowOpen = (message, event) => {
     if (event?.ctrlKey || event?.metaKey) return toggleSelect(message.id);
@@ -283,6 +302,7 @@ export default function App() {
         u: () => last && threadAction('unread', ids),
         Escape: () => setSelection(new Set()),
       };
+      if (event.key === 'Escape' && view !== 'mail' && !addingTo && !document.querySelector('.modal')) { event.preventDefault(); setView('mail'); return; }
       const handler = keys[event.key];
       if (handler && view === 'mail') { event.preventDefault(); handler(); }
     };
@@ -296,7 +316,7 @@ export default function App() {
     return (
       <div className="welcome">
         <div className="welcome-card">
-          <div className="welcome-brand"><span className="brand-mark"><Mail size={22} /></span><strong>{t('appName')}</strong>
+          <div className="welcome-brand"><Logo size={34} /><strong>{t('appName')}</strong>
             <button className="link-button" onClick={async () => setState(await api.setLanguage(language === 'ar' ? 'en' : 'ar'))}>{language === 'ar' ? 'English' : 'العربية'}</button>
           </div>
           <h1>{t('welcomeTitle')}</h1>
@@ -338,7 +358,8 @@ export default function App() {
         onView={(next) => { setView(next); if (next !== 'mail') setComposer((c) => (c?.inline ? null : c)); }}
         onCompose={() => compose()}
         onAddProject={() => setView('settings-projects')}
-        onAddAccount={() => setView('settings-accounts')}
+        onAddAccount={(projectId) => setAddingTo(projectId)}
+        onReorderAccounts={async (ids) => { const next = await guard(() => api.reorderAccounts(ids)); if (next) setState(next); }}
         update={update}
       />
       {view === 'mail' && (
@@ -358,6 +379,18 @@ export default function App() {
             onClearSelection={() => setSelection(new Set())}
             onAction={rowAction}
             onBulk={bulk}
+            onSelectAll={() => setSelection(new Set(list.messages.map((m) => m.id)))}
+            importantView={scope.kind === 'unified' && scope.role === 'important'}
+            aiAlerts={Boolean(state.settings.aiAlerts)}
+            onEnableAlerts={async () => { const next = await guard(() => api.updateSettings({ aiAlerts: true })); if (next) { setState(next); showToast(t('aiAlertsOn')); } }}
+            onMarkAllRead={async () => {
+              const { forcedFilter, ...rest } = scopeParams(scope);
+              const result = await guard(() => api.markAllRead(rest));
+              if (!result) return;
+              setState(result.state);
+              refreshList();
+              showToast(result.count ? t('markedAllRead', { n: result.count }) : t('nothingUnread'));
+            }}
             onLoadMore={() => setLimit((n) => n + PAGE)}
             search={search}
             onSearch={setSearch}
@@ -390,10 +423,22 @@ export default function App() {
           </main>
         </>
       )}
-      {view === 'drafts' && <DraftsPage t={t} language={language} state={state} setState={setState} onOpenDraft={openDraft} />}
-      {view === 'outbox' && <OutboxPage t={t} language={language} state={state} setState={setState} onToast={showToast} />}
-      {view === 'activity' && <ActivityPage t={t} language={language} state={state} />}
-      {view.startsWith('settings') && <SettingsView key={view} t={t} state={state} setState={setState} language={language} onToast={showToast} onView={setView} initialTab={view.split('-')[1] || 'general'} />}
+      {view !== 'mail' && (
+        <div className="page-shell">
+          <button className="back-button" onClick={() => setView('mail')} title="Esc"><ArrowLeft size={16} className="flip-rtl" />{t('backToMail')}</button>
+          {view === 'drafts' && <DraftsPage t={t} language={language} state={state} setState={setState} onOpenDraft={openDraft} />}
+          {view === 'outbox' && <OutboxPage t={t} language={language} state={state} setState={setState} onToast={showToast} />}
+          {view === 'activity' && <ActivityPage t={t} language={language} state={state} />}
+          {view.startsWith('settings') && <SettingsView key={view} t={t} state={state} setState={setState} language={language} onToast={showToast} onView={setView} onAddAccount={setAddingTo} initialTab={view.split('-')[1] || 'general'} />}
+        </div>
+      )}
+      {addingTo && (
+        <Modal title={t('addAccountTo', { project: projectsById[addingTo]?.name || '' })} onClose={() => setAddingTo(null)} width="560px">
+          <div className="modal-body">
+            <AccountSetup t={t} projects={state.projects} defaultProjectId={addingTo} lockProject onCancel={() => setAddingTo(null)} onDone={(next) => { setState(next); setAddingTo(null); setExpanded((current) => new Set([...current, addingTo])); }} />
+          </div>
+        </Modal>
+      )}
       <Toast toast={toast} onClose={() => { clearTimeout(toastTimer.current); setToast(null); }} />
     </div>
   );

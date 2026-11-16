@@ -3,7 +3,7 @@ const { buildRawMessage, detectServers, imapConfig, parseRawMessage, verifySmtp,
 
 const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
 const PROVIDERS = new Set(['custom', 'gmail', 'zoho', 'outlook']);
-const LIST_FILTERS = new Set(['all', 'unread', 'important', 'flagged', 'attachments']);
+const LIST_FILTERS = new Set(['all', 'unread', 'important', 'flagged', 'attachments', 'spam']);
 const FOLDER_ROLES = new Set(['inbox', 'sent', 'archive', 'trash', 'junk', 'drafts', 'all', 'custom', 'any']);
 
 const DEFAULT_SETTINGS = {
@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
   markReadOnOpen: true,
   aiProvider: 'auto',
   autoUpdate: true,
+  aiAlerts: false,
 };
 const SETTING_RULES = {
   theme: (v) => ['system', 'light', 'dark'].includes(v),
@@ -25,6 +26,7 @@ const SETTING_RULES = {
   markReadOnOpen: (v) => typeof v === 'boolean',
   aiProvider: (v) => ['auto', 'claude', 'codex', 'off'].includes(v),
   autoUpdate: (v) => typeof v === 'boolean',
+  aiAlerts: (v) => typeof v === 'boolean',
 };
 
 function text(value, max = 500) {
@@ -100,9 +102,26 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       raw = await sync.worker(message.accountId).fetchRaw(message);
       const parsed = await parseRawMessage(raw);
       db.setRaw(message.id, raw, parsed.preview);
+      db.refreshTrust(message.id, raw);
       return parsed;
     }
     return parseRawMessage(raw);
+  }
+
+  async function markSeen(messageIds, seen) {
+    const groups = new Map();
+    for (const id of messageIds) {
+      const message = db.getMessage(id);
+      db.setSeen(message.id, seen);
+      const key = `${message.accountId}|${message.folderId}`;
+      if (!groups.has(key)) groups.set(key, { accountId: message.accountId, folderId: message.folderId, uids: [] });
+      groups.get(key).uids.push(message.uid);
+    }
+    await Promise.all([...groups.values()].map(async (group) => {
+      for (let i = 0; i < group.uids.length; i += 500) {
+        await sync.worker(group.accountId).setSeenMany(group.folderId, group.uids.slice(i, i + 500), seen).catch(() => {});
+      }
+    }));
   }
 
   function each(messageIds, work) {
@@ -177,6 +196,12 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
         smtpSecure: input.smtpSecure !== false,
         password,
       };
+      const login = (a) => `${(a.username || a.email).toLowerCase()}@${String(a.imapHost).toLowerCase()}`;
+      const existing = db.listAccounts().find((a) => a.email.toLowerCase() === account.email.toLowerCase() || login(a) === login(account));
+      if (existing) {
+        const where = db.listProjects().find((p) => p.id === existing.projectId)?.name || '';
+        throw new Error(`DUPLICATE_ACCOUNT:${existing.email}:${where}`);
+      }
       // Check both servers before saving so a typo never ends up stored.
       await testImapLogin(account);
       try {
@@ -214,9 +239,16 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
 
     async deleteAccount(id) {
       const accountId = text(id, 64);
+      const email = db.listAccounts().find((a) => a.id === accountId)?.email;
       await sync.removeAccount(accountId);
       db.deleteAccount(accountId);
-      db.audit('account.deleted', { accountId });
+      db.audit('account.deleted', { accountId, email });
+      return api.state();
+    },
+
+    reorderAccounts(ids) {
+      if (!Array.isArray(ids)) throw new Error('Invalid order.');
+      db.reorderAccounts(ids.slice(0, 500).map((id) => text(id, 64)));
       return api.state();
     },
 
@@ -237,7 +269,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       return api.state();
     },
 
-    listMessages(params = {}) {
+    listMessages(params = {}, maxLimit = 500) {
       return db.listMessages({
         projectId: text(params.projectId, 64) || 'all',
         accountId: text(params.accountId, 64) || 'all',
@@ -246,7 +278,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
         filter: LIST_FILTERS.has(params.filter) ? params.filter : 'all',
         query: text(params.query, 200),
         offset: Math.max(0, Number(params.offset) || 0),
-        limit: Math.min(500, Math.max(1, Number(params.limit) || 200)),
+        limit: Math.min(maxLimit, Math.max(1, Number(params.limit) || (maxLimit > 500 ? maxLimit : 200))),
         threaded: params.threaded !== false,
       });
     },
@@ -278,11 +310,15 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
     },
 
     async setRead(messageIds, read) {
-      await each(messageIds, async (message) => {
-        db.setSeen(message.id, Boolean(read));
-        await sync.worker(message.accountId).setSeen(message, Boolean(read)).catch(() => {});
-      });
+      await markSeen(ids(messageIds), Boolean(read));
       return api.state();
+    },
+
+    /** Mark every unread message of the current view as read (not only the loaded page). */
+    async markAllRead(params = {}) {
+      const unread = api.listMessages({ ...params, filter: 'unread', threaded: false, query: '' }, Number.MAX_SAFE_INTEGER).messages.map((m) => m.id);
+      if (unread.length) await markSeen(unread, true);
+      return { state: api.state(), count: unread.length };
     },
 
     async setFlagged(messageIds, flagged) {

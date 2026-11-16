@@ -4,6 +4,11 @@ import { classNames } from '../lib/format';
 
 const api = window.emargy;
 const errorText = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+const setupError = (t, error) => {
+  const message = errorText(error);
+  const duplicate = message.match(/^DUPLICATE_ACCOUNT:([^:]*):(.*)$/);
+  return duplicate ? t('duplicateAccount', { email: duplicate[1], project: duplicate[2] }) : message;
+};
 export const PROJECT_COLORS = ['#1F6F5C', '#175CD3', '#6941C6', '#C11574', '#B54708', '#0E7490', '#4D7C0F', '#9F1239'];
 
 export function ColorPicker({ value, onChange, t }) {
@@ -20,7 +25,7 @@ export function ColorPicker({ value, onChange, t }) {
  * Add an email account: address + password, servers found automatically
  * (DNS only), connection tested before anything is saved.
  */
-export default function AccountSetup({ t, projects, defaultProjectId, onDone, onCancel, firstRun = false }) {
+export default function AccountSetup({ t, projects, defaultProjectId, onDone, onCancel, firstRun = false, lockProject = false }) {
   const [project, setProject] = useState({ name: '', color: PROJECT_COLORS[0] });
   const [form, setForm] = useState({ projectId: defaultProjectId || projects[0]?.id || '', displayName: '', email: '', password: '', username: '' });
   const [servers, setServers] = useState(null);
@@ -60,7 +65,7 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
       state = await api.addAccount({ ...settings, ...form, projectId, username: form.username || undefined });
       onDone(state);
     } catch (err) {
-      setError(errorText(err));
+      setError(setupError(t, err));
       setAdvanced(true);
     } finally {
       setBusy('');
@@ -79,7 +84,7 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
       )}
       <fieldset>
         <legend>{t('setupAccountTitle')}</legend>
-        {!needProject && projects.length > 1 && (
+        {!needProject && projects.length > 1 && !lockProject && (
           <label className="field"><span>{t('project')}</span>
             <select value={form.projectId} onChange={(e) => set('projectId', e.target.value)}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
           </label>

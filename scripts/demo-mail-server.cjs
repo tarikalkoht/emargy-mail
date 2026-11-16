@@ -49,6 +49,13 @@ async function demoMessages() {
       text: 'Hi,\n\nSharing the notes from Monday. Next review is on Thursday at 10:00.\n\nSara',
       ageMinutes: 60 * 26,
     }),
+    build({
+      from: 'MetaMask Support <alerts@wallet-verify.test>',
+      subject: '***SPAM*** Unrecognized Login Attempt',
+      headers: { 'X-Spam-Flag': 'YES', 'X-Spam-Status': 'Yes, score=9.4' },
+      text: 'We detected a login from a new device. Verify your wallet now or it will be locked: https://wallet-verify.test/login',
+      ageMinutes: 30,
+    }),
   ]);
 }
 

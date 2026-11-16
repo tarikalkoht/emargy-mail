@@ -97,6 +97,31 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     expect(api.state().counts.total).toBe(1);
   });
 
+  it('refuses to add the same mailbox twice', async () => {
+    await expect(api.addAccount(accountInput({ displayName: 'Again' }))).rejects.toThrow(/DUPLICATE_ACCOUNT/);
+    await expect(api.addAccount(accountInput({ email: servers.user.toUpperCase() }))).rejects.toThrow(/DUPLICATE_ACCOUNT/);
+    expect(api.state().accounts).toHaveLength(1);
+  });
+
+  it('marks every unread message of a view as read, on the server too', async () => {
+    const accountId = api.state().accounts[0].id;
+    const result = await api.markAllRead({ folderRole: 'inbox' });
+    expect(result.count).toBe(1);
+    expect(result.state.counts.total).toBe(0);
+    await api.syncAccount(accountId); // flags come back from the server
+    expect(api.listMessages({ folderRole: 'inbox', filter: 'unread' }).total).toBe(0);
+    const invoice = api.listMessages({ folderRole: 'inbox' }).messages.find((m) => m.subject === 'Secret quarterly invoice');
+    await api.setRead([invoice.id], false);
+    await api.syncAccount(accountId);
+    expect(api.state().counts.total).toBe(1);
+  });
+
+  it('keeps the account order the reader chooses', () => {
+    const ids = api.state().accounts.map((a) => a.id);
+    expect(api.reorderAccounts([...ids].reverse()).accounts.map((a) => a.id)).toEqual([...ids].reverse());
+    expect(() => api.reorderAccounts('nope')).toThrow(/Invalid order/);
+  });
+
   it('never writes mail content, addresses or passwords to disk in clear text', async () => {
     db.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     const files = fs.readdirSync(dir).map((file) => fs.readFileSync(path.join(dir, file)));

@@ -1,5 +1,6 @@
 const { ImapFlow } = require('imapflow');
 const { imapConfig, parseRawMessage, summarizeFetched } = require('./mail.cjs');
+const { classifyTrust } = require('./core.cjs');
 
 const INITIAL_WINDOW = 500;
 const RECONCILE_WINDOW = 1000;
@@ -42,6 +43,8 @@ function folderRole(folder) {
   if (/^(archive|archives)$/i.test(name)) return 'archive';
   return 'custom';
 }
+
+const TRUST_HEADERS = ['references', 'x-spam-flag', 'x-spam-status', 'x-spam', 'x-ms-exchange-organization-scl', 'authentication-results'];
 
 function parseReferences(headers) {
   if (!headers) return '';
@@ -202,8 +205,12 @@ class AccountWorker {
       }
 
       const fetched = [];
-      const query = { uid: true, envelope: true, flags: true, size: true, bodyStructure: true, headers: ['references'] };
-      const summarize = (item) => ({ ...summarizeFetched(item, account), references: parseReferences(item.headers) });
+      const query = { uid: true, envelope: true, flags: true, size: true, bodyStructure: true, headers: TRUST_HEADERS };
+      const summarize = (item) => {
+        const summary = summarizeFetched(item, account);
+        const headers = item.headers?.toString('utf8') || '';
+        return { ...summary, references: parseReferences(item.headers), trust: classifyTrust({ ...summary, folderRole: folder.role, headers }) };
+      };
       if (!folder.last_uid) {
         const start = Math.max(1, mailbox.exists - INITIAL_WINDOW + 1);
         for await (const item of client.fetch(`${start}:*`, query)) fetched.push(summarize(item));
@@ -250,6 +257,7 @@ class AccountWorker {
           if (!message || !item.source) continue;
           const parsed = await parseRawMessage(item.source);
           this.db.setRaw(message.id, item.source, parsed.preview);
+          this.db.refreshTrust(message.id, item.source);
         }
       } finally {
         lock.release();
@@ -278,6 +286,21 @@ class AccountWorker {
       try {
         if (seen) await client.messageFlagsAdd(String(message.uid), ['\\Seen'], { uid: true });
         else await client.messageFlagsRemove(String(message.uid), ['\\Seen'], { uid: true });
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  /** One IMAP command per folder, however many messages. */
+  setSeenMany(folderId, uids, seen) {
+    return this.run(async (client) => {
+      const folder = this.db.getFolder(folderId);
+      const lock = await client.getMailboxLock(folder.path);
+      try {
+        const range = uids.join(',');
+        if (seen) await client.messageFlagsAdd(range, ['\\Seen'], { uid: true });
+        else await client.messageFlagsRemove(range, ['\\Seen'], { uid: true });
       } finally {
         lock.release();
       }
