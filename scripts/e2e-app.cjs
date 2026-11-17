@@ -161,6 +161,14 @@ async function main() {
     if (!(await page.getByLabel('Google app password').count())) throw new Error('Google app password field missing.');
     await shot('03b-google-guide');
     step('Gmail address shows the guided app-password setup');
+    await page.locator('form.setup').getByLabel(/Email address/).fill('someone@hotmail.com');
+    await page.locator('form.setup').getByLabel(/Your name/).click();
+    await page.locator('.provider-guide', { hasText: 'Microsoft' }).waitFor();
+    if (await page.locator('form.setup input[type="password"]').count()) throw new Error('Password field shown for a Microsoft account.');
+    await page.getByRole('button', { name: 'Sign in with Microsoft' }).click();
+    await page.locator('.form-error').waitFor();
+    await shot('03b2-microsoft');
+    step('Microsoft address asks to sign in on Microsoft’s page (no password field)');
     await page.getByRole('button', { name: 'Cancel' }).click();
 
     // Adding from a project only asks for that project's account, and refuses a mailbox that already exists.

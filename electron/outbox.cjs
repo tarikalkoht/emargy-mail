@@ -1,4 +1,5 @@
 const { sendRawMessage } = require('./mail.cjs');
+const { freshAccount } = require('./oauth.cjs');
 
 const RETRY_DELAYS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000, 3 * 60 * 60_000];
 const MAX_ATTEMPTS = RETRY_DELAYS.length + 1;
@@ -52,7 +53,7 @@ class Outbox {
   }
 
   async deliver(item) {
-    const account = this.db.getAccount(item.accountId, { withSecrets: true });
+    const account = await freshAccount(this.db, item.accountId);
     const raw = Buffer.from(item.raw, 'base64');
     this.db.updateOutbox(item.id, { status: 'sending', attempts: item.attempts, nextAttemptAt: item.nextAttemptAt });
     this.emit('outbox:changed', {});

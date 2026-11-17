@@ -21,7 +21,7 @@ function imapConfig(account) {
     port: Number(account.imapPort || 993),
     secure,
     doSTARTTLS: secure ? undefined : (isLoopbackHost(account.imapHost) ? undefined : true),
-    auth: { user: account.username || account.email, pass: account.password },
+    auth: account.authType === 'microsoft' ? { user: account.email, accessToken: account.oauth?.accessToken } : { user: account.username || account.email, pass: account.password },
     logger: false,
     emitLogs: false,
     connectionTimeout: 30_000,
@@ -40,7 +40,7 @@ function smtpTransport(account) {
     port: Number(account.smtpPort || 465),
     secure,
     requireTLS: !secure && !isLoopbackHost(account.smtpHost),
-    auth: { user: account.username || account.email, pass: account.password },
+    auth: account.authType === 'microsoft' ? { type: 'OAuth2', user: account.email, accessToken: account.oauth?.accessToken } : { user: account.username || account.email, pass: account.password },
     connectionTimeout: 30_000,
     greetingTimeout: 20_000,
     tls: { minVersion: 'TLSv1.2' },
@@ -186,7 +186,7 @@ async function extractAttachment(raw, index) {
 
 const PRESETS = {
   gmail: { provider: 'gmail', imapHost: 'imap.gmail.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecure: true },
-  outlook: { provider: 'outlook', imapHost: 'outlook.office365.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.office365.com', smtpPort: 587, smtpSecure: false, needsOAuth: true },
+  outlook: { provider: 'outlook', imapHost: 'outlook.office365.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.office365.com', smtpPort: 587, smtpSecure: false, needsOAuth: true, oauthProvider: 'microsoft' },
   zoho: { provider: 'zoho', imapHost: 'imap.zoho.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.zoho.com', smtpPort: 465, smtpSecure: true },
   zohoEu: { provider: 'zoho', imapHost: 'imap.zoho.eu', imapPort: 993, imapSecure: true, smtpHost: 'smtp.zoho.eu', smtpPort: 465, smtpSecure: true },
   yahoo: { provider: 'custom', imapHost: 'imap.mail.yahoo.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.mail.yahoo.com', smtpPort: 465, smtpSecure: true },

@@ -7,6 +7,7 @@ const { SyncManager } = require('./sync.cjs');
 const { Outbox } = require('./outbox.cjs');
 const { createApi } = require('./api.cjs');
 const ai = require('./ai.cjs');
+const oauth = require('./oauth.cjs');
 const { Updater } = require('./updater.cjs');
 const { ImportanceWatcher } = require('./importance.cjs');
 const { selectNotifications, notificationText } = require('./notify.cjs');
@@ -187,6 +188,18 @@ function registerHandlers() {
   handle('account:update', (id, changes) => api.updateAccount(id, changes));
   handle('account:delete', (id) => api.deleteAccount(id));
   handle('account:reorder', (ids) => api.reorderAccounts(ids));
+  // Microsoft sign-in opens the reader's own browser; the token never passes through the interface.
+  handle('account:microsoft', async (input) => {
+    const signed = await oauth.signIn({ loginHint: String(input?.email || '').slice(0, 320), openBrowser: (url) => shell.openExternal(url) });
+    return api.addOAuthAccount(input, signed);
+  });
+  handle('account:microsoftRenew', async (accountId) => {
+    const account = api.state().accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error('Account not found.');
+    const signed = await oauth.signIn({ loginHint: account.email, openBrowser: (url) => shell.openExternal(url) });
+    return api.renewOAuth(accountId, signed);
+  });
+  handle('microsoft:available', () => Boolean(oauth.MICROSOFT.clientId));
   handle('messages:allRead', (params) => api.markAllRead(params));
   handle('messages:older', (params) => api.loadOlder(params));
   handle('messages:searchServer', (params) => api.searchServer(params));

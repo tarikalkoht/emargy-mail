@@ -1,6 +1,7 @@
 const { ImapFlow } = require('imapflow');
 const { imapConfig, parseRawMessage, summarizeFetched } = require('./mail.cjs');
 const { classifyTrust, trustedAuthServers } = require('./core.cjs');
+const { freshAccount } = require('./oauth.cjs');
 const { verifiedDkimDomains } = require('./dkim.cjs');
 
 const INITIAL_WINDOW = 500;
@@ -95,7 +96,13 @@ class AccountWorker {
   async ensureConnected() {
     if (this.stopped) throw new Error('Account sync is stopped.');
     if (this.client?.usable) return;
-    const account = this.db.getAccount(this.accountId, { withSecrets: true });
+    let account;
+    try {
+      account = await freshAccount(this.db, this.accountId);
+    } catch (error) {
+      this.setStatus('error', error.message);
+      throw error;
+    }
     this.setStatus('connecting');
     const client = new ImapFlow(imapConfig(account));
     client.on('error', () => {});

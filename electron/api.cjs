@@ -1,4 +1,5 @@
 const { ImapFlow } = require('imapflow');
+const { MICROSOFT } = require('./oauth.cjs');
 const { buildRawMessage, detectServers, imapConfig, parseRawMessage, verifySmtp, extractAttachment } = require('./mail.cjs');
 
 const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
@@ -199,7 +200,46 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       return detectServers(emailAddress(email));
     },
 
+    /** Called by the main process after a completed Microsoft sign-in (never from the interface directly). */
+    async addOAuthAccount(input, signed) {
+      const projectId = text(input?.projectId, 64);
+      if (!db.listProjects().some((project) => project.id === projectId)) throw new Error('Choose a valid project.');
+      const email = emailAddress(signed.email);
+      const existing = db.listAccounts().find((a) => a.email.toLowerCase() === email);
+      if (existing) {
+        const where = db.listProjects().find((p) => p.id === existing.projectId)?.name || '';
+        throw new Error(`DUPLICATE_ACCOUNT:${existing.email}:${where}`);
+      }
+      const account = {
+        projectId, provider: 'outlook', authType: 'microsoft', displayName: text(input.displayName, 120) || text(signed.name, 120),
+        email, ...MICROSOFT.servers, oauth: signed.oauth,
+      };
+      await testImapLogin(account);
+      try {
+        await verifySmtp(account);
+      } catch (error) {
+        // Some Microsoft 365 tenants switch SMTP sign-in off; reading mail still works.
+        db.audit('account.smtpWarning', { email, error: error.message.slice(0, 200) });
+      }
+      const id = db.createAccount(account);
+      db.audit('account.created', { accountId: id, projectId, email, via: 'microsoft' });
+      sync.worker(id).syncNow().catch(() => {});
+      return api.state();
+    },
+
+    /** New tokens after "sign in again" (password changed, access revoked…). */
+    async renewOAuth(accountId, signed) {
+      const account = db.getAccount(text(accountId, 64));
+      if (account.authType !== 'microsoft') throw new Error('This account does not sign in with Microsoft.');
+      if (signed.email && signed.email.toLowerCase() !== account.email.toLowerCase()) throw new Error(`Sign in as ${account.email}.`);
+      db.updateAccount(account.id, { oauth: signed.oauth });
+      await sync.removeAccount(account.id);
+      sync.worker(account.id).syncNow().catch(() => {});
+      return api.state();
+    },
+
     async addAccount(input) {
+      if (input?.authType || input?.oauth) throw new Error('Use Sign in with Microsoft for this account.');
       const projectId = text(input?.projectId, 64);
       if (!db.listProjects().some((project) => project.id === projectId)) throw new Error('Choose a valid project.');
       const password = String(input?.password || '');

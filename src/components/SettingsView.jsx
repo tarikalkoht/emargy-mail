@@ -223,14 +223,19 @@ function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove
         <button className="icon-button quiet" disabled={last} onClick={() => onMove(1)} title={t('moveDown')} aria-label={t('moveDown')}><ArrowDown size={15} /></button>
         <button className="icon-button quiet" onClick={() => api.syncAccount(account.id).then(setState).catch((e) => onToast(errorText(e), 'error'))} title={t('syncNow')} aria-label={t('syncNow')}><RefreshCw size={15} /></button>
       </header>
-      {account.sync?.error && <p className="form-error">{account.sync.error}</p>}
+      {account.sync?.error && <p className="form-error">{account.sync.error === 'MICROSOFT_SIGN_IN_AGAIN' ? t('microsoftSignInAgain') : account.sync.error}</p>}
       {open && (<>
       <div className="card-grid">
         <label className="field"><span>{t('yourName')}</span><input dir="auto" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} /></label>
         <label className="field"><span>{t('project')}</span><select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>{state.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className="field"><span>{t('signatureNew')}</span><select value={form.signatureNew} onChange={(e) => setForm({ ...form, signatureNew: e.target.value })}><option value="">{t('noSignature')}</option>{state.signatures.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
         <label className="field"><span>{t('signatureReply')}</span><select value={form.signatureReply} onChange={(e) => setForm({ ...form, signatureReply: e.target.value })}><option value="">{t('noSignature')}</option>{state.signatures.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
-        <label className="field wide"><span>{t('changePassword')}</span><input type="password" dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={t('changePasswordHint')} /></label>
+        {account.authType === 'microsoft' ? (
+          <div className="field wide microsoft-renew">
+            <span>{t('microsoftAccount')}</span>
+            <button type="button" className="button ghost" onClick={() => api.renewMicrosoft(account.id).then(setState).then(() => onToast(t('saved'))).catch((e) => onToast(errorText(e), 'error'))}>{t('microsoftRenew')}</button>
+          </div>
+        ) : <label className="field wide"><span>{t('changePassword')}</span><input type="password" dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={t('changePasswordHint')} /></label>}
       </div>
       <footer>
         <button className="button ghost danger-text" onClick={remove}><Trash2 size={15} />{t('deleteAccount')}</button>

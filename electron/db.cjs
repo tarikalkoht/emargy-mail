@@ -211,7 +211,10 @@ class Database {
   decodeAccount(row, withSecrets) {
     const data = this.vault.decryptJson(row.data);
     const account = { id: row.id, projectId: row.project_id, createdAt: row.created_at, ...data };
-    if (!withSecrets) delete account.password;
+    if (!withSecrets) {
+      delete account.password;
+      delete account.oauth;
+    }
     return account;
   }
 

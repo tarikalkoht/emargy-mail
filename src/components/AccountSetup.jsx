@@ -7,7 +7,9 @@ const errorText = (error) => String(error?.message || error).replace(/^Error inv
 const setupError = (t, error) => {
   const message = errorText(error);
   const duplicate = message.match(/^DUPLICATE_ACCOUNT:([^:]*):(.*)$/);
-  return duplicate ? t('duplicateAccount', { email: duplicate[1], project: duplicate[2] }) : message;
+  if (duplicate) return t('duplicateAccount', { email: duplicate[1], project: duplicate[2] });
+  if (message === 'MICROSOFT_NOT_CONFIGURED') return t('microsoftNotConfigured');
+  return message;
 };
 export const PROJECT_COLORS = ['#017B66', '#175CD3', '#6941C6', '#C11574', '#B54708', '#0E7490', '#4D7C0F', '#9F1239'];
 
@@ -37,6 +39,7 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
   const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const setServer = (key, value) => setServers((current) => ({ ...current, [key]: value }));
   const isGoogle = servers?.provider === 'gmail';
+  const isMicrosoft = Boolean(servers?.needsOAuth);
 
   const detect = async (email) => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
@@ -61,12 +64,19 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
       setBusy(t('findingServers'));
       const settings = servers || await detect(form.email);
       if (!settings) throw new Error(t('serversNotFound'));
+      if (settings.needsOAuth) {
+        // Microsoft: the password is typed on Microsoft's own page, in the browser.
+        setBusy(t('waitingForMicrosoft'));
+        state = await api.addMicrosoftAccount({ projectId, displayName: form.displayName, email: form.email });
+        onDone(state);
+        return;
+      }
       setBusy(t('testingConnection'));
       state = await api.addAccount({ ...settings, ...form, projectId, username: form.username || undefined });
       onDone(state);
     } catch (err) {
       setError(setupError(t, err));
-      setAdvanced(true);
+      if (!servers?.needsOAuth) setAdvanced(true);
     } finally {
       setBusy('');
     }
@@ -91,9 +101,16 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
         )}
         <label className="field"><span>{t('yourName')}</span><input value={form.displayName} onChange={(e) => set('displayName', e.target.value)} placeholder={t('yourNameExample')} dir="auto" /></label>
         <label className="field"><span>{t('email')}</span><input type="email" required dir="ltr" autoFocus={!needProject} value={form.email} onChange={(e) => { set('email', e.target.value); setServers(null); }} onBlur={(e) => !servers && detect(e.target.value)} /></label>
-        <label className="field"><span>{isGoogle ? t('appPassword') : t('password')}</span><input type="password" required dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => set('password', isGoogle ? e.target.value.replace(/\s+/g, '') : e.target.value)} placeholder={isGoogle ? 'xxxx xxxx xxxx xxxx' : undefined} /></label>
-        <p className="hint"><Lock size={13} />{t('passwordHelp')}</p>
-        {servers?.needsOAuth && <p className="warning"><AlertTriangle size={15} />{t('microsoftWarning')}</p>}
+        {!isMicrosoft && (
+          <label className="field"><span>{isGoogle ? t('appPassword') : t('password')}</span><input type="password" required dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => set('password', isGoogle ? e.target.value.replace(/\s+/g, '') : e.target.value)} placeholder={isGoogle ? 'xxxx xxxx xxxx xxxx' : undefined} /></label>
+        )}
+        {!isMicrosoft && <p className="hint"><Lock size={13} />{t('passwordHelp')}</p>}
+        {isMicrosoft && (
+          <div className="provider-guide">
+            <strong>{t('microsoftGuideTitle')}</strong>
+            <span>{t('microsoftGuideText')}</span>
+          </div>
+        )}
         {isGoogle && (
           <div className="provider-guide">
             <strong>{t('googleGuideTitle')}</strong>
@@ -109,10 +126,10 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
           </div>
         )}
 
-        <button type="button" className="disclosure" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
+        {!isMicrosoft && <button type="button" className="disclosure" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
           <ChevronDown size={14} />{t('serverSettings')}{servers && !advanced && <span className="muted">{servers.imapHost}</span>}
-        </button>
-        {advanced && (
+        </button>}
+        {advanced && !isMicrosoft && (
           <div className="server-grid">
             <label className="field"><span>{t('imapHost')}</span><input dir="ltr" value={servers?.imapHost || ''} onChange={(e) => setServer('imapHost', e.target.value)} /></label>
             <label className="field narrow"><span>{t('port')}</span><input dir="ltr" type="number" value={servers?.imapPort || 993} onChange={(e) => setServer('imapPort', Number(e.target.value))} /></label>
@@ -128,7 +145,7 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
       {error && <p className="form-error" role="alert"><AlertTriangle size={15} />{error}</p>}
       <div className="setup-actions">
         {onCancel && <button type="button" className="button ghost" onClick={onCancel}>{t('cancel')}</button>}
-        <button className="button primary" disabled={Boolean(busy)}>{busy ? <><LoaderCircle className="spin" size={16} />{busy}</> : t('connectAccount')}</button>
+        <button className="button primary" disabled={Boolean(busy)}>{busy ? <><LoaderCircle className="spin" size={16} />{busy}</> : (isMicrosoft ? t('signInWithMicrosoft') : t('connectAccount'))}</button>
       </div>
     </form>
   );
