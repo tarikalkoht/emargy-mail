@@ -6,6 +6,8 @@ const { verifiedDkimDomains } = require('./dkim.cjs');
 const INITIAL_WINDOW = 500;
 const RECONCILE_WINDOW = 1000;
 const PREFETCH_BODIES = 40;
+const OLDER_BATCH = 500;
+const SEARCH_LIMIT = 200;
 const PERIODIC_SYNC_MS = 5 * 60_000;
 const RECONNECT_DELAYS = [5_000, 15_000, 60_000, 5 * 60_000];
 const MAX_PARALLEL_SYNCS = 3;
@@ -53,6 +55,8 @@ function parseReferences(headers) {
   const match = text.match(/^references:\s*(.*)$/im);
   return match ? match[1].trim() : '';
 }
+
+const FETCH_QUERY = { uid: true, envelope: true, flags: true, size: true, bodyStructure: true, headers: TRUST_HEADERS };
 
 class AccountWorker {
   constructor(manager, accountId) {
@@ -192,6 +196,70 @@ class AccountWorker {
     });
   }
 
+  summarize(item, folder, account) {
+    const summary = summarizeFetched(item, account);
+    const headers = item.headers?.toString('utf8') || '';
+    return { ...summary, references: parseReferences(item.headers), trust: classifyTrust({ ...summary, folderRole: folder.role, headers, authServers: trustedAuthServers(account) }) };
+  }
+
+  async fetchInto(client, folder, account, uids) {
+    const fetched = [];
+    for (let i = 0; i < uids.length; i += 250) {
+      for await (const item of client.fetch(uids.slice(i, i + 250).join(','), FETCH_QUERY, { uid: true })) fetched.push(this.summarize(item, folder, account));
+    }
+    return this.db.insertMessages(folder, fetched);
+  }
+
+  /** Bring in up to `count` messages older than the oldest one stored for this folder. */
+  loadOlder(folderId, count = OLDER_BATCH) {
+    return this.run(async (client) => {
+      const folder = this.db.getFolder(folderId);
+      if (!folder) return { added: 0, done: true };
+      const account = this.db.getAccount(this.accountId);
+      const lock = await client.getMailboxLock(folder.path);
+      try {
+        this.db.setFolderServerTotal(folder.id, client.mailbox.exists);
+        // The floor is where the continuous history ends; search results below it do not count.
+        const floor = folder.floor_uid || this.db.oldestUid(folder.id);
+        if (!floor || floor <= 1) {
+          this.db.setFolderOlderDone(folder.id, Boolean(floor));
+          return { added: 0, done: Boolean(floor) };
+        }
+        const older = ((await client.search({ uid: `1:${floor - 1}` }, { uid: true })) || []).filter((uid) => uid < floor).sort((a, b) => a - b);
+        const batch = older.slice(-count);
+        const local = new Set(this.db.localUids(folder.id));
+        const missing = batch.filter((uid) => !local.has(uid));
+        const added = missing.length ? await this.fetchInto(client, folder, account, missing) : [];
+        const done = older.length <= count;
+        this.db.setFolderFloor(folder.id, done ? 1 : batch[0]);
+        this.db.setFolderOlderDone(folder.id, done);
+        return { added: added.length, done };
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  /** Ask the server (subject, people and body), bring in what is not stored yet; returns local ids of every hit. */
+  searchFolder(folderId, query, limit = SEARCH_LIMIT) {
+    return this.run(async (client) => {
+      const folder = this.db.getFolder(folderId);
+      if (!folder) return [];
+      const account = this.db.getAccount(this.accountId);
+      const lock = await client.getMailboxLock(folder.path);
+      try {
+        const criteria = { or: [{ subject: query }, { from: query }, { to: query }, { body: query }] };
+        const uids = ((await client.search(criteria, { uid: true })) || []).sort((a, b) => b - a).slice(0, limit);
+        const local = new Set(this.db.localUids(folder.id));
+        const missing = uids.filter((uid) => !local.has(uid));
+        if (missing.length) await this.fetchInto(client, folder, account, missing);
+        return uids.map((uid) => `${folder.account_id}:${folder.id}:${uid}`);
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   async syncFolder(client, folder, account) {
     const lock = await client.getMailboxLock(folder.path);
     try {
@@ -207,15 +275,12 @@ class AccountWorker {
         return [];
       }
 
+      this.db.setFolderServerTotal(folder.id, mailbox.exists);
       const fetched = [];
-      const query = { uid: true, envelope: true, flags: true, size: true, bodyStructure: true, headers: TRUST_HEADERS };
-      const summarize = (item) => {
-        const summary = summarizeFetched(item, account);
-        const headers = item.headers?.toString('utf8') || '';
-        return { ...summary, references: parseReferences(item.headers), trust: classifyTrust({ ...summary, folderRole: folder.role, headers, authServers: trustedAuthServers(account) }) };
-      };
+      const query = FETCH_QUERY;
+      const summarize = (item) => this.summarize(item, folder, account);
       if (!folder.last_uid) {
-        const start = Math.max(1, mailbox.exists - INITIAL_WINDOW + 1);
+        const start = Math.max(1, mailbox.exists - this.manager.initialWindow + 1);
         for await (const item of client.fetch(`${start}:*`, query)) fetched.push(summarize(item));
       } else {
         for await (const item of client.fetch(`${folder.last_uid + 1}:*`, query, { uid: true })) {
@@ -223,6 +288,7 @@ class AccountWorker {
         }
       }
       const added = this.db.insertMessages(folder, fetched);
+      if (!folder.last_uid && fetched.length) this.db.setFolderFloor(folder.id, Math.min(...fetched.map((m) => m.uid)));
       const lastUid = Math.max(folder.last_uid, ...fetched.map((m) => m.uid));
 
       // Refresh read/flag state and remove messages deleted elsewhere, within a bounded window.
@@ -394,7 +460,8 @@ class AccountWorker {
 }
 
 class SyncManager {
-  constructor({ db, emit = () => {} }) {
+  constructor({ db, emit = () => {}, initialWindow = INITIAL_WINDOW }) {
+    this.initialWindow = initialWindow;
     this.db = db;
     this.emit = emit;
     this.workers = new Map();

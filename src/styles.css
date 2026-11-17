@@ -561,3 +561,11 @@ button.page-row-main:hover { background: var(--surface-2); }
 .scene-plain-thumb { position: absolute; inset: 0; background: var(--surface); border: 1px dashed var(--line-strong); border-radius: 8px; }
 .scene-add { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 8px; }
 .scene-actions { display: flex; gap: 8px; margin-top: 6px; }
+
+/* Older mail and server search */
+.load-older { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 8px; width: 100%; min-height: 52px; padding: 10px 16px; border: 0; border-top: 1px dashed var(--line); background: none; color: var(--accent); font-weight: 500; font-size: 13.5px; }
+.load-older small { width: 100%; color: var(--muted); font-weight: 400; font-size: 12px; }
+.load-older:disabled { color: var(--muted); }
+.server-search { display: flex; align-items: center; gap: 7px; margin: 0 12px 6px; padding: 6px 10px; border-radius: 6px; background: var(--surface-2); color: var(--ink-2); font-size: 12.5px; }
+.server-search.done svg { color: var(--accent); }
+.server-search.failed { background: var(--warn-soft); }

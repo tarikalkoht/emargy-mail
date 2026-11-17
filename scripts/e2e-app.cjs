@@ -38,7 +38,7 @@ async function main() {
   const app = await electron.launch({
     executablePath: packaged ? path.resolve(packaged) : require('electron'),
     args: packaged ? [] : [path.join(__dirname, '..')],
-    env: { ...process.env, EMARGY_DATA_DIR: dataDir, EMARGY_USE_DIST: '1' },
+    env: { ...process.env, EMARGY_DATA_DIR: dataDir, EMARGY_USE_DIST: '1', EMARGY_INITIAL_WINDOW: '3' },
   });
   const outgoing = [];
   try {
@@ -55,6 +55,15 @@ async function main() {
     await page.waitForSelector('.app .row', { timeout: 30000 });
     await page.locator('.row').nth(3).waitFor();
     step(`first-run setup connected the account (${await page.locator('.row').count()} conversations)`);
+    // Only the newest 3 were synced first; reaching the end of the list loads the older ones from the server.
+    await page.waitForFunction(() => document.querySelectorAll('.row').length === 5 && !document.querySelector('.load-older'), null, { timeout: 20000 });
+    step('older mail loads from the server when the end of the list is reached');
+    await page.locator('.list-search input').fill('Thursday');
+    await page.locator('.server-search.done').waitFor({ timeout: 20000 });
+    if (!(await page.locator('.row', { hasText: 'Meeting notes' }).count())) throw new Error('Search did not find the message by its text.');
+    await shot('01c-server-search');
+    await page.locator('.list-search input').fill('');
+    step('search also asks the server and finds words inside messages');
     await page.locator('.empty-scene.trays .scene-card h2').waitFor();
     await shot('01b-empty-scene');
     step('empty reading pane shows the picture and a greeting');

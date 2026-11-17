@@ -188,6 +188,8 @@ function registerHandlers() {
   handle('account:delete', (id) => api.deleteAccount(id));
   handle('account:reorder', (ids) => api.reorderAccounts(ids));
   handle('messages:allRead', (params) => api.markAllRead(params));
+  handle('messages:older', (params) => api.loadOlder(params));
+  handle('messages:searchServer', (params) => api.searchServer(params));
   handle('account:sync', (id) => api.syncAccount(id));
   handle('folder:sync', (id) => api.syncFolder(id));
   handle('sync:all', () => api.syncAll());
@@ -353,7 +355,8 @@ app.whenReady().then(() => {
       if (payload?.newInbox?.length) importance?.poke();
     }
   };
-  sync = new SyncManager({ db, emit: forward });
+  // EMARGY_INITIAL_WINDOW only exists so tests can use a small mailbox.
+  sync = new SyncManager({ db, emit: forward, initialWindow: Number(process.env.EMARGY_INITIAL_WINDOW) || undefined });
   outbox = new Outbox({ db, sync, emit: forward });
   api = createApi({ db, sync, outbox, emit: forward });
   updater = new Updater({

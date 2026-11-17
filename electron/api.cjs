@@ -283,6 +283,42 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       return api.updateSettings({ emptyScene: dataUrl === null ? 'trays' : 'custom' });
     },
 
+    /** Folders that make up a view (used to load older mail and to search the server). */
+    foldersForScope(params = {}, { forSearch = false } = {}) {
+      const folders = db.listAllFolders();
+      if (params.folderId) return folders.filter((f) => f.id === Number(params.folderId));
+      const accounts = db.listAccounts().filter((a) => (!params.accountId || params.accountId === 'all' || a.id === params.accountId)
+        && (!params.projectId || params.projectId === 'all' || a.projectId === params.projectId));
+      return accounts.flatMap((account) => {
+        const own = folders.filter((f) => f.accountId === account.id);
+        if (forSearch) {
+          // Gmail's "All Mail" already holds everything; elsewhere search the main folders.
+          const all = own.find((f) => f.role === 'all');
+          return all ? [all] : own.filter((f) => ['inbox', 'sent', 'archive'].includes(f.role));
+        }
+        const role = ['sent', 'archive', 'trash', 'junk', 'drafts', 'all'].includes(params.folderRole) ? params.folderRole : 'inbox';
+        return own.filter((f) => f.role === role);
+      });
+    },
+
+    async loadOlder(params = {}) {
+      const folders = api.foldersForScope(params).filter((f) => !f.olderDone);
+      const results = await Promise.all(folders.map((f) => sync.worker(f.accountId).loadOlder(f.id).catch(() => ({ added: 0, done: false, failed: true }))));
+      const added = results.reduce((sum, r) => sum + r.added, 0);
+      return { state: api.state(), added, done: api.foldersForScope(params).every((f) => f.olderDone), failed: results.some((r) => r.failed) };
+    },
+
+    async searchServer(params = {}) {
+      const query = text(params.query, 200);
+      if (query.length < 2) return { found: 0, added: 0 };
+      const before = db.listMessages({ folderRole: 'any', query, threaded: false, limit: 1e6 }).total;
+      const folders = api.foldersForScope(params, { forSearch: true });
+      const hits = await Promise.all(folders.map((f) => sync.worker(f.accountId).searchFolder(f.id, query).catch(() => [])));
+      db.rememberSearch(query, hits.flat());
+      const after = db.listMessages({ folderRole: 'any', query, threaded: false, limit: 1e6 }).total;
+      return { found: hits.flat().length, added: Math.max(0, after - before) };
+    },
+
     reorderAccounts(ids) {
       if (!Array.isArray(ids)) throw new Error('Invalid order.');
       db.reorderAccounts(ids.slice(0, 500).map((id) => text(id, 64)));

@@ -1,4 +1,5 @@
-import { Archive, BadgeCheck, CheckCheck, Flag, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, Paperclip, RefreshCw, Search, ShieldAlert, Sparkles, Trash2, X } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { Archive, BadgeCheck, CloudDownload, Server, CheckCheck, Flag, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, Paperclip, RefreshCw, Search, ShieldAlert, Sparkles, Trash2, X } from 'lucide-react';
 import { classNames, displayName, formatListDate } from '../lib/format';
 
 const FILTERS = ['all', 'unread', 'important', 'flagged', 'attachments', 'spam'];
@@ -63,8 +64,18 @@ function Row({ message, project, account, showAccount, active, selected, selecti
 export default function MessageList({
   t, language, title, list, projectsById, accountsById, showAccount, selectedId, selection, onOpen, onToggle, onClearSelection,
   onAction, onBulk, onLoadMore, search, onSearch, filter, onFilter, onSync, syncing, searchRef, onSelectAll, onMarkAllRead,
-  importantView, aiAlerts, onEnableAlerts,
+  importantView, aiAlerts, onEnableAlerts, older, loadingOlder, onLoadOlder, serverSearch,
 }) {
+  const olderRef = useRef(null);
+  // Reaching the end of the list asks the server for older mail by itself.
+  useEffect(() => {
+    const target = olderRef.current;
+    // Only for the full list: a filtered list could otherwise pull the whole mailbox.
+    if (!target || !older?.available || search || filter !== 'all') return undefined;
+    const observer = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) onLoadOlder(); }, { rootMargin: '200px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [older?.available, search, filter, list.messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const selecting = selection.size > 0;
   const allSelected = list.messages.length > 0 && list.messages.every((m) => selection.has(m.id));
   return (
@@ -107,6 +118,16 @@ export default function MessageList({
           <button className="button primary small" onClick={onEnableAlerts}>{t('aiAlertsEnable')}</button>
         </div>
       )}
+      {search && serverSearch && (
+        <div className={classNames('server-search', serverSearch.status)} role="status">
+          {serverSearch.status === 'searching' ? <LoaderCircle className="spin" size={14} /> : <Server size={14} />}
+          <span>{{
+            searching: t('serverSearching'),
+            done: serverSearch.added ? t('serverFoundMore', { n: serverSearch.added }) : t('serverSearched', { n: serverSearch.found }),
+            failed: t('serverSearchFailed'),
+          }[serverSearch.status]}</span>
+        </div>
+      )}
       <div className="filters" role="tablist">
         {(importantView ? [] : FILTERS).map((key) => <button key={key} role="tab" aria-selected={filter === key} className={classNames(filter === key && 'on')} onClick={() => onFilter(key)}>{t(`filter_${key}`)}</button>)}
       </div>
@@ -129,6 +150,13 @@ export default function MessageList({
           />
         ))}
         {list.total > list.messages.length && <button className="load-more" onClick={onLoadMore}>{t('loadMore')}</button>}
+        {list.total <= list.messages.length && !search && older?.available && (
+          <button ref={olderRef} className="load-older" onClick={onLoadOlder} disabled={loadingOlder}>
+            {loadingOlder ? <LoaderCircle className="spin" size={15} /> : <CloudDownload size={15} />}
+            <span>{loadingOlder ? t('loadingOlder') : t('loadOlder')}</span>
+            {older.total > 0 && <small>{t('olderProgress', { loaded: Math.min(older.loaded, older.total), total: older.total })}</small>}
+          </button>
+        )}
         {!list.messages.length && (
           <div className="list-empty">
             <Inbox size={30} strokeWidth={1.4} />

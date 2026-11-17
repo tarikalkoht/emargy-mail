@@ -121,6 +121,9 @@ class Database {
     const columns = (table) => new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
     if (!columns('folders').has('name')) this.db.exec('ALTER TABLE folders ADD COLUMN name TEXT');
     if (!columns('messages').has('thread_key')) this.db.exec('ALTER TABLE messages ADD COLUMN thread_key TEXT');
+    if (!columns('folders').has('server_total')) this.db.exec('ALTER TABLE folders ADD COLUMN server_total INTEGER NOT NULL DEFAULT 0');
+    if (!columns('folders').has('floor_uid')) this.db.exec('ALTER TABLE folders ADD COLUMN floor_uid INTEGER NOT NULL DEFAULT 0');
+    if (!columns('folders').has('older_done')) this.db.exec('ALTER TABLE folders ADD COLUMN older_done INTEGER NOT NULL DEFAULT 0');
     if (!columns('accounts').has('sort_order')) this.db.exec('ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
     // Spam / trust verdict from the server's own filter and the sender authentication results.
     if (!columns('messages').has('trust')) this.db.exec("ALTER TABLE messages ADD COLUMN trust TEXT NOT NULL DEFAULT ''");
@@ -275,8 +278,41 @@ class Database {
       totals[message.folderId] = (totals[message.folderId] || 0) + 1;
       if (!message.read) unread[message.folderId] = (unread[message.folderId] || 0) + 1;
     }
-    return this.db.prepare('SELECT id, account_id, path, role, name FROM folders ORDER BY account_id, id').all()
-      .map((f) => ({ id: f.id, accountId: f.account_id, path: f.path, role: f.role, name: f.name || f.path, unread: unread[f.id] || 0, total: totals[f.id] || 0 }));
+    return this.db.prepare('SELECT id, account_id, path, role, name, server_total, older_done FROM folders ORDER BY account_id, id').all()
+      .map((f) => ({
+        id: f.id, accountId: f.account_id, path: f.path, role: f.role, name: f.name || f.path, unread: unread[f.id] || 0, total: totals[f.id] || 0,
+        serverTotal: f.server_total, olderDone: Boolean(f.older_done) || (f.server_total > 0 && (totals[f.id] || 0) >= f.server_total),
+      }));
+  }
+
+  setFolderServerTotal(id, total) {
+    this.db.prepare('UPDATE folders SET server_total = ? WHERE id = ?').run(Number(total) || 0, id);
+  }
+
+  setFolderFloor(id, uid) {
+    this.db.prepare('UPDATE folders SET floor_uid = ? WHERE id = ?').run(Number(uid) || 0, id);
+  }
+
+  setFolderOlderDone(id, done) {
+    this.db.prepare('UPDATE folders SET older_done = ? WHERE id = ?').run(done ? 1 : 0, id);
+  }
+
+  oldestUid(folderId) {
+    return this.db.prepare('SELECT MIN(uid) AS uid FROM messages WHERE folder_id = ?').get(folderId)?.uid || null;
+  }
+
+  localUids(folderId) {
+    return this.db.prepare('SELECT uid FROM messages WHERE folder_id = ?').all(folderId).map((r) => r.uid);
+  }
+
+  /** Server search hits for a query, so messages that matched in their body show up in the results. */
+  rememberSearch(query, ids) {
+    const key = String(query || '').trim().toLowerCase();
+    if (!key) return;
+    this.searchHits = this.searchHits || new Map();
+    this.searchHits.delete(key);
+    this.searchHits.set(key, new Set(ids));
+    while (this.searchHits.size > 20) this.searchHits.delete(this.searchHits.keys().next().value);
   }
 
   getFolder(id) {
@@ -289,7 +325,7 @@ class Database {
 
   resetFolder(id) {
     this.db.prepare('DELETE FROM messages WHERE folder_id = ?').run(id);
-    this.db.prepare('UPDATE folders SET uid_validity = NULL, last_uid = 0 WHERE id = ?').run(id);
+    this.db.prepare('UPDATE folders SET uid_validity = NULL, last_uid = 0, older_done = 0, floor_uid = 0 WHERE id = ?').run(id);
     for (const [key, header] of this.headers) if (header.folderId === id) this.headers.delete(key);
     this.sortHeaders();
   }
@@ -481,6 +517,7 @@ class Database {
    */
   listMessages({ projectId = 'all', accountId = 'all', folderId = null, folderRole = 'inbox', filter = 'all', query = '', offset = 0, limit = 200, threaded = true } = {}) {
     const needle = String(query || '').trim().toLowerCase();
+    const serverHits = needle ? this.searchHits?.get(needle) : null;
     const matches = this.sorted.filter((m) => {
       const anyFolder = needle || folderRole === 'any';
       if (folderId ? m.folderId !== folderId : (anyFolder ? ['trash', 'junk'].includes(m.folderRole) : m.folderRole !== folderRole)) return false;
@@ -491,7 +528,7 @@ class Database {
       if (filter === 'spam' && !['spam', 'suspicious'].includes(m.trust)) return false;
       if (filter === 'flagged' && !m.flagged) return false;
       if (filter === 'attachments' && !m.hasAttachments) return false;
-      return !needle || m.search.includes(needle);
+      return !needle || m.search.includes(needle) || Boolean(serverHits?.has(m.id));
     });
     let items = matches;
     if (threaded) {
@@ -499,9 +536,10 @@ class Database {
       for (const message of matches) {
         const key = `${message.accountId}:${message.threadKey}`;
         const thread = threads.get(key);
-        if (!thread) threads.set(key, { ...message, threadCount: 1, threadUnread: !message.read, threadFlagged: message.flagged });
+        const messageKey = message.messageId || message.id;
+        if (!thread) threads.set(key, { ...message, threadCount: 1, threadUnread: !message.read, threadFlagged: message.flagged, seenIds: new Set([messageKey]) });
         else {
-          thread.threadCount += 1;
+          if (!thread.seenIds.has(messageKey)) { thread.seenIds.add(messageKey); thread.threadCount += 1; }
           thread.threadUnread ||= !message.read;
           thread.threadFlagged ||= message.flagged;
         }
@@ -510,7 +548,7 @@ class Database {
     }
     return {
       total: items.length,
-      messages: items.slice(offset, offset + limit).map(({ search, dateValue, ...message }) => message),
+      messages: items.slice(offset, offset + limit).map(({ search, dateValue, seenIds, ...message }) => message),
     };
   }
 

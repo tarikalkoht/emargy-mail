@@ -63,6 +63,9 @@ export default function App() {
   const [limit, setLimit] = useState(PAGE);
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [serverSearch, setServerSearch] = useState(null);
+  const serverSearchId = useRef(0);
   const [filter, setFilter] = useState('all');
   const [selection, setSelection] = useState(() => new Set());
   const [selectedId, setSelectedId] = useState(null);
@@ -98,6 +101,29 @@ export default function App() {
   }, [showToast]);
 
   const params = scopeParams(scope);
+  const scopeFolders = useMemo(() => {
+    if (params.folderId) return state.folders.filter((f) => f.id === params.folderId);
+    const accounts = state.accounts.filter((a) => (!params.accountId || a.id === params.accountId) && (!params.projectId || a.projectId === params.projectId));
+    const role = ['sent', 'archive', 'trash', 'junk', 'drafts', 'all'].includes(params.folderRole) ? params.folderRole : 'inbox';
+    return state.folders.filter((f) => f.role === role && accounts.some((a) => a.id === f.accountId));
+  }, [state.folders, state.accounts, params.folderId, params.accountId, params.projectId, params.folderRole]);
+  const older = {
+    available: scopeFolders.some((f) => !f.olderDone),
+    loaded: scopeFolders.reduce((sum, f) => sum + (f.total || 0), 0),
+    total: scopeFolders.reduce((sum, f) => sum + (f.serverTotal || 0), 0),
+  };
+  const loadOlder = async () => {
+    if (loadingOlder) return;
+    setLoadingOlder(true);
+    const { forcedFilter, ...rest } = scopeParams(scope);
+    const result = await guard(() => api.loadOlder(rest));
+    setLoadingOlder(false);
+    if (!result) return;
+    setState(result.state);
+    setLimit((n) => n + PAGE);
+    refreshList();
+    if (result.failed) showToast(t('olderFailed'), 'error');
+  };
   const listRequest = useRef(0);
   const refreshList = useCallback(async () => {
     const { forcedFilter, ...rest } = scopeParams(scope);
@@ -119,6 +145,26 @@ export default function App() {
   }, [showToast]);
   useEffect(() => { refreshList().catch(() => {}); }, [refreshList]);
   useEffect(() => { const timer = setTimeout(() => { setQuery(search); setLimit(PAGE); }, 220); return () => clearTimeout(timer); }, [search]);
+
+  // Search the servers too (bodies and mail that was never downloaded), shortly after typing stops.
+  useEffect(() => {
+    const term = query.trim();
+    const id = ++serverSearchId.current;
+    if (term.length < 2) { setServerSearch(null); return undefined; }
+    const timer = setTimeout(async () => {
+      setServerSearch({ status: 'searching' });
+      const { forcedFilter, ...rest } = scopeParams(scope);
+      try {
+        const result = await api.searchServer({ ...rest, query: term });
+        if (id !== serverSearchId.current) return;
+        setServerSearch({ status: 'done', ...result });
+        refreshList().catch(() => {});
+      } catch {
+        if (id === serverSearchId.current) setServerSearch({ status: 'failed' });
+      }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [query, scope]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const offStatus = api.onSyncStatus(({ accountId, status, error }) => setState((current) => ({ ...current, accounts: current.accounts.map((a) => (a.id === accountId ? { ...a, sync: { status, error } } : a)) })));
     const offMail = api.onMailChanged(() => { refreshList().catch(() => {}); refreshState().catch(() => {}); });
@@ -411,6 +457,10 @@ export default function App() {
             onAction={rowAction}
             onBulk={bulk}
             onSelectAll={() => setSelection(new Set(list.messages.map((m) => m.id)))}
+            older={older}
+            loadingOlder={loadingOlder}
+            onLoadOlder={loadOlder}
+            serverSearch={serverSearch}
             importantView={scope.kind === 'unified' && scope.role === 'important'}
             aiAlerts={Boolean(state.settings.aiAlerts)}
             onEnableAlerts={async () => { const next = await guard(() => api.updateSettings({ aiAlerts: true })); if (next) { setState(next); showToast(t('aiAlertsOn')); } }}

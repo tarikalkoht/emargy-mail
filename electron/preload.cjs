@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('emargy', {
   threadIds: invoke('thread:ids'),
   markRead: invoke('messages:read'),
   markAllRead: invoke('messages:allRead'),
+  loadOlder: invoke('messages:older'),
+  searchServer: invoke('messages:searchServer'),
   setFlagged: invoke('messages:flag'),
   archive: invoke('messages:archive'),
   trash: invoke('messages:trash'),
