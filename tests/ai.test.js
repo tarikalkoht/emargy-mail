@@ -24,6 +24,13 @@ describe('AI assistant bridge', () => {
     }
   });
 
+  it('finds tools in the usual install folders on macOS and Linux, even with a minimal PATH', () => {
+    const dirs = ai.searchPath({ PATH: '/usr/bin:/bin' }, 'darwin', '/Users/sami');
+    expect(dirs.slice(0, 2)).toEqual(['/usr/bin', '/bin']);
+    expect(dirs).toEqual(expect.arrayContaining(['/Users/sami/.local/bin', '/opt/homebrew/bin', '/usr/local/bin']));
+    expect(ai.searchPath({ PATH: 'C:\\Windows' }, 'win32', 'C:\\Users\\sami')).toEqual(['C:\\Windows']);
+  });
+
   it('keeps Claude without any tools and Codex in a read-only sandbox', () => {
     const claude = ai.PROVIDERS.claude.args({ task: 'summarize', language: 'en', text: 'SECRET-EMAIL-BODY' });
     expect(claude.slice(0, 3)).toEqual(['-p', '--tools', '']);

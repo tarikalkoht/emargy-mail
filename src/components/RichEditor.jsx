@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
+import { shortcut } from '../i18n.js';
 import { Node, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Color, TextStyle, FontSize } from '@tiptap/extension-text-style';
@@ -118,8 +119,8 @@ function Toolbar({ editor, t, onPickImage, compact }) {
   return (
     <div className="editor-toolbar" role="toolbar" aria-label={t('formatting')}>
       {!compact && <>
-        <ToolButton className="tool-history" title={`${t('undo')} (Ctrl+Z)`} disabled={!state.canUndo} onClick={() => run((c) => c.undo())}><Undo2 size={16} /></ToolButton>
-        <ToolButton className="tool-history" title={`${t('redo')} (Ctrl+Y)`} disabled={!state.canRedo} onClick={() => run((c) => c.redo())}><Redo2 size={16} /></ToolButton>
+        <ToolButton className="tool-history" title={`${t('undo')} (${shortcut('Ctrl+Z')})`} disabled={!state.canUndo} onClick={() => run((c) => c.undo())}><Undo2 size={16} /></ToolButton>
+        <ToolButton className="tool-history" title={`${t('redo')} (${shortcut('Ctrl+Y')})`} disabled={!state.canRedo} onClick={() => run((c) => c.redo())}><Redo2 size={16} /></ToolButton>
         <span className="tool-sep tool-history" />
         <select className="tool-select" value={state.heading} onChange={(e) => run((c) => (e.target.value === 'p' ? c.setParagraph() : c.setHeading({ level: e.target.value === 'h2' ? 2 : 3 })))} title={t('textStyle')}>
           <option value="p">{t('normalText')}</option>

@@ -1,0 +1,117 @@
+# Builds Emargy Mail for Windows, Linux and macOS on GitHub's own machines.
+#
+# Runs on pushes to main and feature branches, on version tags (v1.2.3), and by hand from the
+# Actions tab. The installers are
+# attached to the run as artifacts. Update manifests are NOT signed here: the Ed25519 update key
+# never leaves the maintainer's computer, so releases are signed locally with
+#   node scripts/sign-release.cjs <folder> win|linux|mac
+#
+# macOS signing and notarization switch on by themselves once these repository secrets exist:
+#   MAC_CERT_P12_BASE64, MAC_CERT_PASSWORD   Developer ID Application certificate (.p12, base64)
+#   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID   for notarization
+# Without them the macOS build is unsigned (fine for testing, blocked by Gatekeeper for users).
+name: Build
+
+on:
+  push:
+    branches: [main, 'feature/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win nsis portable
+            exe: release/win-unpacked/Emargy Mail.exe
+            files: |
+              release/*.exe
+          - os: ubuntu-latest
+            target: --linux AppImage deb
+            exe: release/linux-unpacked/emargy-mail
+            files: |
+              release/*.AppImage
+              release/*.deb
+          - os: macos-latest
+            target: --mac dmg
+            exe: release/mac-universal/Emargy Mail.app/Contents/MacOS/Emargy Mail
+            files: |
+              release/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run build
+
+      - name: Build installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          extra=""
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if [ -n "$CSC_LINK" ] && [ -n "$APPLE_ID" ]; then
+              extra="-c.mac.notarize=true"
+            else
+              echo "No Apple certificate: building an unsigned macOS app."
+              export CSC_IDENTITY_AUTO_DISCOVERY=false
+              unset CSC_LINK CSC_KEY_PASSWORD
+            fi
+          fi
+          npx electron-builder ${{ matrix.target }} --publish never $extra
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emargy-mail-${{ runner.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+      # The whole app, packaged, against a local demo mail server: setup, sync, search, spam,
+      # sending, Arabic, dark mode, and a check that the database holds nothing readable.
+      - name: Install a keyring and a virtual screen (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb gnome-keyring dbus-x11
+
+      - name: End-to-end test (Linux)
+        if: runner.os == 'Linux'
+        env:
+          EMARGY_EXE: ${{ matrix.exe }}
+          ELECTRON_DISABLE_SANDBOX: '1'
+        run: |
+          dbus-run-session -- bash -c '
+            echo "ci-keyring" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            xvfb-run -a node scripts/e2e-app.cjs e2e-shots'
+
+      - name: End-to-end test (Windows, macOS)
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          EMARGY_EXE: ${{ matrix.exe }}
+        run: node scripts/e2e-app.cjs e2e-shots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots-${{ runner.os }}
+          path: e2e-shots
+          if-no-files-found: ignore

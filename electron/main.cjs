@@ -88,8 +88,10 @@ function createWindow() {
     height: 900,
     minWidth: 1050,
     minHeight: 650,
-    // Packaged builds take the icon from the .exe; this covers running from source.
-    ...(app.isPackaged ? {} : { icon: path.join(__dirname, '..', 'build', 'icon.ico') }),
+    // Windows and macOS take the icon from the app itself; Linux windows need it set, and so
+    // does a copy run from source.
+    ...(process.platform === 'linux' ? { icon: path.join(__dirname, '..', 'build', 'icon.png') }
+      : app.isPackaged ? {} : { icon: path.join(__dirname, '..', 'build', 'icon.ico') }),
     backgroundColor: '#07111f',
     show: false,
     title: 'Emargy Mail',
@@ -123,6 +125,44 @@ function createWindow() {
   if (DEV_URL) mainWindow.loadURL(DEV_URL);
   else mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  // On macOS the app keeps running after the window closes; the Dock icon opens a new one.
+  mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+/** macOS needs an application menu, or Copy, Paste and Quit stop working. */
+function setMenu() {
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]));
+  } else if (app.isPackaged) {
+    Menu.setApplicationMenu(null);
+  }
+}
+
+/** Unread count on the taskbar (Windows overlay), the Dock (macOS) or the launcher (Linux). */
+function setUnreadBadge(image, label) {
+  const count = Number.parseInt(label, 10) || 0;
+  if (process.platform === 'darwin') { app.dock?.setBadge(count ? String(label) : ''); return true; }
+  if (process.platform === 'linux') { app.setBadgeCount(count); return true; }
+  if (!mainWindow) return false;
+  if (!image) { mainWindow.setOverlayIcon(null, ''); return true; }
+  mainWindow.setOverlayIcon(nativeImage.createFromDataURL(image), String(label || '').slice(0, 80));
+  return true;
+}
+
+/** Where each system keeps the key that unlocks the encrypted database. */
+const KEY_STORE = { win32: 'Windows data protection', darwin: 'the macOS Keychain', linux: 'a system keyring (GNOME Keyring or KWallet)' };
+
+/**
+ * The database key must be protected by the operating system. On Linux without a keyring,
+ * Electron falls back to a fixed built-in password ("basic_text"), which protects nothing,
+ * so that case is refused rather than storing secrets that anyone could read.
+ */
+function secureStorageReady() {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  if (process.platform === 'linux' && typeof safeStorage.getSelectedStorageBackend === 'function') {
+    return !['basic_text', 'unknown'].includes(safeStorage.getSelectedStorageBackend());
+  }
+  return true;
 }
 
 /** Accept IPC only from this app's own top-level page. */
@@ -174,11 +214,8 @@ function registerHandlers() {
   handle('scene:set', (dataUrl) => api.setSceneImage(dataUrl ?? null));
   // Unread count on the taskbar button, drawn by the interface as a small PNG.
   handle('badge:set', ({ image, label } = {}) => {
-    if (!mainWindow) return false;
-    if (!image) { mainWindow.setOverlayIcon(null, ''); return true; }
-    if (!/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(String(image)) || image.length > 60_000) throw new Error('Invalid badge.');
-    mainWindow.setOverlayIcon(nativeImage.createFromDataURL(image), String(label || '').slice(0, 80));
-    return true;
+    if (image && (!/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(String(image)) || image.length > 60_000)) throw new Error('Invalid badge.');
+    return setUnreadBadge(image, image ? label : '');
   });
   handle('clipboard:write', (value) => { clipboard.writeText(String(value ?? '').slice(0, 200_000)); return true; });
   handle('project:create', (input) => api.createProject(input));
@@ -322,8 +359,8 @@ function notifyImportant(found) {
 }
 
 function openStorage() {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('Windows data protection is not available, so Emargy Mail cannot store your data securely.');
+  if (!secureStorageReady()) {
+    throw new Error(`Emargy Mail keeps its encryption key in ${KEY_STORE[process.platform] || 'the system key store'}, which is not available, so it cannot store your data securely.`);
   }
   const dataDir = app.getPath('userData');
   const vault = new Vault({
@@ -359,7 +396,7 @@ app.whenReady().then(() => {
     app.quit();
     return;
   }
-  if (app.isPackaged) Menu.setApplicationMenu(null);
+  setMenu();
   hardenSession();
   const forward = (channel, payload) => {
     emit(channel, payload);
@@ -415,4 +452,8 @@ app.on('before-quit', (event) => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('activate', () => {
+  if (!mainWindow && db) createWindow();
 });

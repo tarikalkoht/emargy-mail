@@ -195,9 +195,9 @@ async function main() {
     await editor.waitFor();
     await page.locator('.composer .signature-block', { hasText: 'Sami Haddad' }).waitFor();
     await page.keyboard.type('شكراً أحمد، استلمنا ');
-    await page.keyboard.press('Control+b');
+    await page.keyboard.press('ControlOrMeta+b');
     await page.keyboard.type('عرض السعر');
-    await page.keyboard.press('Control+b');
+    await page.keyboard.press('ControlOrMeta+b');
     await page.keyboard.type(' وسنرد قبل الخميس.');
     await shot('04-reply-editor');
     step('reply composer: formatting, Arabic text, signature inserted automatically');

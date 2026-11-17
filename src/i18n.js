@@ -551,10 +551,17 @@ export const translations = {
   },
 };
 
+/** Mac keyboards use ⌘ where Windows and Linux use Ctrl. */
+export const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent || '');
+
+export function shortcut(keys) {
+  return isMac ? keys.replace(/Ctrl\+Y/g, '⌘⇧Z').replace(/Ctrl\+/g, '⌘') : keys;
+}
+
 export function translator(language) {
   return (key, params, fallback) => {
     let value = translations[language]?.[key] ?? translations.en[key] ?? fallback ?? key;
     if (params) for (const [name, replacement] of Object.entries(params)) value = value.replaceAll(`{${name}}`, String(replacement));
-    return value;
+    return shortcut(value);
   };
 }

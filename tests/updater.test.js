@@ -39,7 +39,14 @@ function publish(manifest, data, { signWith = PRIVATE, tamper = false } = {}) {
   };
 }
 
-const updater = (extra = {}) => new Updater({ currentVersion: '0.5.0', isPackaged: false, portable: false, baseUrl: base, publicKey: PUBLIC, ...extra });
+const updater = (extra = {}) => new Updater({
+  currentVersion: '0.5.0', isPackaged: false, portable: false, baseUrl: base, publicKey: PUBLIC, platform: 'win32', launch: () => {}, ...extra,
+});
+
+function publishFor(manifestName, manifest, data) {
+  const { text, signature } = signManifest(manifest, PRIVATE);
+  files = { [manifestName]: text, [`${manifestName}.sig`]: signature, [manifest.file]: data };
+}
 
 describe('signed updates', () => {
   it('compares versions and refuses downgrades', () => {
@@ -87,6 +94,33 @@ describe('signed updates', () => {
     const u = updater({ store: true });
     expect(await u.check()).toMatchObject({ state: 'store' });
     expect(() => u.install()).toThrow();
+  });
+
+  it('replaces a Linux AppImage in place from its own signed manifest', async () => {
+    const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'emargy-appimage-'));
+    const appImage = path.join(dir, 'Emargy-Mail.AppImage');
+    fs.writeFileSync(appImage, 'old version');
+    const newBuild = Buffer.from('ELF new AppImage '.repeat(3000));
+    publishFor('emargy-update-linux.json', { ...manifestFor(newBuild), file: 'Emargy-Mail-9.9.9.AppImage' }, newBuild);
+    const launched = [];
+    const u = updater({ platform: 'linux', appImage, launch: (file) => launched.push(file) });
+    expect(await u.check()).toMatchObject({ state: 'ready', version: '9.9.9' });
+    u.install();
+    expect(fs.readFileSync(appImage).equals(newBuild)).toBe(true);
+    expect(launched).toEqual([appImage]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses a Windows installer offered to Linux, and only points .deb and macOS copies to the page', async () => {
+    const newBuild = Buffer.from('ELF new AppImage '.repeat(3000));
+    publishFor('emargy-update-linux.json', manifestFor(newBuild), newBuild);
+    expect(await updater({ platform: 'linux', appImage: '/tmp/x.AppImage' }).check()).toMatchObject({ state: 'error', error: expect.stringMatching(/not valid/) });
+
+    publishFor('emargy-update-linux.json', { ...manifestFor(newBuild), file: 'Emargy-Mail-9.9.9.AppImage' }, newBuild);
+    expect(await updater({ platform: 'linux', appImage: undefined }).check()).toMatchObject({ state: 'available', version: '9.9.9' });
+
+    publishFor('emargy-update-mac.json', { ...manifestFor(newBuild), file: 'Emargy-Mail-9.9.9-universal.dmg' }, newBuild);
+    expect(await updater({ platform: 'darwin' }).check()).toMatchObject({ state: 'available', version: '9.9.9' });
   });
 
   it('will not run an installer that changed after it was verified', async () => {

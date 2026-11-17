@@ -3,7 +3,11 @@
   "version": "0.9.0",
   "description": "Open-source, local-first email client for multiple projects and accounts.",
   "main": "electron/main.cjs",
-  "author": "Emargy contributors",
+  "author": {
+    "name": "Emargy LLC",
+    "email": "info@emargy.com",
+    "url": "https://emargy.com"
+  },
   "license": "AGPL-3.0-only",
   "private": false,
   "scripts": {
@@ -14,7 +18,9 @@
     "test:app": "npm run build && node scripts/e2e-app.cjs",
     "demo:server": "node scripts/demo-mail-server.cjs",
     "dist:win": "npm run test && npm run build && electron-builder --win nsis portable",
-    "dist:store": "npm run test && npm run build && electron-builder --win appx"
+    "dist:store": "npm run test && npm run build && electron-builder --win appx",
+    "dist:linux": "npm run test && npm run build && electron-builder --linux AppImage deb",
+    "dist:mac": "npm run test && npm run build && electron-builder --mac dmg"
   },
   "build": {
     "appId": "com.emargy.mail",
@@ -26,6 +32,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "win": {
@@ -61,6 +68,52 @@
       ],
       "minVersion": "10.0.17763.0",
       "maxVersionTested": "10.0.26100.0"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network",
+      "icon": "build/icon-1024.png",
+      "artifactName": "Emargy-Mail-${version}.${ext}",
+      "synopsis": "Private email for many projects and mailboxes",
+      "description": "Open-source, local-first email client for multiple projects and accounts.",
+      "maintainer": "Emargy LLC <info@emargy.com>",
+      "vendor": "Emargy LLC",
+      "desktop": {
+        "entry": {
+          "Name": "Emargy Mail",
+          "Comment": "Private email for many projects and mailboxes",
+          "Categories": "Network;Email;Office;",
+          "StartupWMClass": "Emargy Mail"
+        }
+      },
+      "syncDesktopName": true
+    },
+    "deb": {
+      "artifactName": "emargy-mail_${version}_${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon-1024.png",
+      "artifactName": "Emargy-Mail-${version}-${arch}.${ext}",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false
+    },
+    "dmg": {
+      "title": "Emargy Mail ${version}"
     }
   },
   "dependencies": {
@@ -95,5 +148,7 @@
     "vite": "^8.3.8",
     "vitest": "^5.1.0",
     "wait-on": "^9.5.1"
-  }
+  },
+  "homepage": "https://emargy.com/emargy-mail",
+  "desktopName": "emargy-mail.desktop"
 }

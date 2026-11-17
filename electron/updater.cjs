@@ -21,6 +21,14 @@ const PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEApg2DbB4DS+yB4eRgUJqojwpkCY+Ga2SxPXprUym8wvk=
 -----END PUBLIC KEY-----`;
 const MANIFEST = 'emargy-update.json';
+// Each system has its own signed manifest. Windows keeps the original name, so copies that
+// are already installed keep finding their updates.
+const MANIFESTS = { win32: MANIFEST, linux: 'emargy-update-linux.json', darwin: 'emargy-update-mac.json' };
+const FILE_PATTERNS = {
+  win32: /^Emargy-Mail-Setup-[\d.]+\.exe$/,
+  linux: /^Emargy-Mail-[\d.]+\.AppImage$/,
+  darwin: /^Emargy-Mail-[\d.]+-universal\.dmg$/,
+};
 const MAX_INSTALLER = 400 * 1024 * 1024;
 const CHECK_EVERY = 6 * 60 * 60 * 1000;
 
@@ -32,13 +40,14 @@ function compareVersions(a, b) {
 }
 
 /** Returns the parsed manifest only if it was signed by the maintainer's key. */
-function verifyManifest(manifestText, signatureBase64, publicKey = PUBLIC_KEY) {
+function verifyManifest(manifestText, signatureBase64, publicKey = PUBLIC_KEY, platform = 'win32') {
   const signature = Buffer.from(String(signatureBase64 || '').trim(), 'base64');
   if (signature.length !== 64) throw new Error('Update signature is missing or malformed.');
   const ok = crypto.verify(null, Buffer.from(manifestText, 'utf8'), crypto.createPublicKey(publicKey), signature);
   if (!ok) throw new Error('Update signature is not valid. The update was refused.');
   const manifest = JSON.parse(manifestText);
-  if (!/^\d+\.\d+\.\d+$/.test(manifest.version) || !/^Emargy-Mail-Setup-[\d.]+\.exe$/.test(manifest.file)
+  const filePattern = FILE_PATTERNS[platform];
+  if (!filePattern || !/^\d+\.\d+\.\d+$/.test(manifest.version) || !filePattern.test(manifest.file)
     || !/^[a-f0-9]{64}$/.test(manifest.sha256) || !(manifest.size > 0 && manifest.size < MAX_INSTALLER)) {
     throw new Error('Update manifest is not valid.');
   }
@@ -57,6 +66,13 @@ async function fetchChecked(url, { json = false, text = false } = {}) {
   if (json) return response.json();
   if (text) return response.text();
   return response;
+}
+
+/** Starts the installer or the new AppImage on its own, so this copy can quit. */
+function launchDetached(file, args) {
+  const child = spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: true });
+  child.on('error', () => {});
+  child.unref();
 }
 
 async function downloadVerified(url, manifest, destination) {
@@ -84,13 +100,22 @@ async function downloadVerified(url, manifest, destination) {
 }
 
 class Updater {
-  constructor({ currentVersion, isPackaged, portable, store = false, baseUrl = process.env.EMARGY_UPDATE_URL, publicKey = PUBLIC_KEY, emit = () => {}, onQuit = () => {} }) {
+  constructor({
+    currentVersion, isPackaged, portable, store = false, baseUrl = process.env.EMARGY_UPDATE_URL, publicKey = PUBLIC_KEY,
+    platform = process.platform, appImage = process.env.APPIMAGE, emit = () => {}, onQuit = () => {}, launch = launchDetached,
+  }) {
+    this.launch = launch;
     this.publicKey = publicKey;
     this.currentVersion = currentVersion;
+    this.platform = platform;
+    this.manifestName = MANIFESTS[platform];
     // A Microsoft Store copy is updated by the Store; it must never fetch or run an installer itself.
     this.store = store;
-    this.enabled = !store && (isPackaged || Boolean(baseUrl));
-    this.portable = portable;
+    this.enabled = !store && Boolean(this.manifestName) && (isPackaged || Boolean(baseUrl));
+    // Linux replaces the AppImage file it runs from. A .deb install, a portable Windows copy and
+    // macOS (until releases are signed by Apple) only show that an update is available.
+    this.appImage = platform === 'linux' ? appImage : null;
+    this.portable = portable || platform === 'darwin' || (platform === 'linux' && !this.appImage);
     this.baseUrl = baseUrl;
     this.emit = emit;
     this.onQuit = onQuit;
@@ -127,18 +152,23 @@ class Updater {
     this.set({ state: 'checking' });
     try {
       const { page, asset } = await this.releaseAssets();
-      const manifestUrl = asset(MANIFEST);
-      const signatureUrl = asset(`${MANIFEST}.sig`);
+      const manifestUrl = asset(this.manifestName);
+      const signatureUrl = asset(`${this.manifestName}.sig`);
       if (!manifestUrl || !signatureUrl) return this.set({ state: 'current' });
-      const manifest = verifyManifest(await fetchChecked(manifestUrl, { text: true }), await fetchChecked(signatureUrl, { text: true }), this.publicKey);
+      const manifest = verifyManifest(
+        await fetchChecked(manifestUrl, { text: true }), await fetchChecked(signatureUrl, { text: true }), this.publicKey, this.platform,
+      );
       if (compareVersions(manifest.version, this.currentVersion) <= 0) return this.set({ state: 'current' });
       if (this.portable) return this.set({ state: 'available', version: manifest.version, page });
       const installerUrl = asset(manifest.file);
       if (!installerUrl) throw new Error('Update file is missing from the release.');
       this.set({ state: 'downloading', version: manifest.version });
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emargy-update-'));
+      // The new AppImage is downloaded next to the running one, so swapping them is a single rename.
+      const target = this.appImage
+        ? path.join(path.dirname(this.appImage), `.${manifest.file}.download`)
+        : path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'emargy-update-')), manifest.file);
       this.manifest = manifest;
-      this.installer = await downloadVerified(installerUrl, manifest, path.join(dir, manifest.file));
+      this.installer = await downloadVerified(installerUrl, manifest, target);
       return this.set({ state: 'ready', version: manifest.version });
     } catch (error) {
       return this.set({ state: 'error', error: error.message });
@@ -152,11 +182,18 @@ class Updater {
       this.set({ state: 'error', error: 'The downloaded update was changed on disk. It was refused.' });
       throw new Error('The downloaded update was changed on disk.');
     }
-    // Silent install over the current one, then start the new version.
-    spawn(this.installer, ['/S', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    if (this.appImage) {
+      // Replace the AppImage in place, then start the new one.
+      fs.chmodSync(this.installer, 0o755);
+      fs.renameSync(this.installer, this.appImage);
+      this.launch(this.appImage, []);
+    } else {
+      // Silent install over the current one, then start the new version.
+      this.launch(this.installer, ['/S', '--force-run']);
+    }
     this.onQuit();
     return { ok: true };
   }
 }
 
-module.exports = { Updater, verifyManifest, signManifest, compareVersions, downloadVerified, MANIFEST, PUBLIC_KEY };
+module.exports = { Updater, verifyManifest, signManifest, compareVersions, downloadVerified, MANIFEST, MANIFESTS, PUBLIC_KEY };
