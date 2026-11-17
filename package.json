@@ -1,6 +1,6 @@
 {
   "name": "emargy-mail",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Open-source, local-first email client for multiple projects and accounts.",
   "main": "electron/main.cjs",
   "author": "Emargy contributors",

@@ -13,7 +13,7 @@ const http = require('node:http');
 
 // Application (client) ID of Emargy Mail's app registration in Microsoft Entra.
 // It is public by design (a desktop app cannot keep secrets) and identifies the app, not a user.
-const MICROSOFT_CLIENT_ID = '';
+const MICROSOFT_CLIENT_ID = '401eb5eb-a881-4bf8-83b1-cfb6aa0db352';
 
 const MICROSOFT = {
   id: 'microsoft',

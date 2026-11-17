@@ -165,8 +165,8 @@ async function main() {
     await page.locator('form.setup').getByLabel(/Your name/).click();
     await page.locator('.provider-guide', { hasText: 'Microsoft' }).waitFor();
     if (await page.locator('form.setup input[type="password"]').count()) throw new Error('Password field shown for a Microsoft account.');
-    await page.getByRole('button', { name: 'Sign in with Microsoft' }).click();
-    await page.locator('.form-error').waitFor();
+    // The button opens Microsoft's page in the real browser, so the run stops before pressing it.
+    await page.getByRole('button', { name: 'Sign in with Microsoft' }).waitFor();
     await shot('03b2-microsoft');
     step('Microsoft address asks to sign in on Microsoft’s page (no password field)');
     await page.getByRole('button', { name: 'Cancel' }).click();
