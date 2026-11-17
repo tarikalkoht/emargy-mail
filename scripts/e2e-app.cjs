@@ -13,7 +13,8 @@ const { _electron: electron } = require('playwright-core');
 const { startDemoServers, DEMO_USER, DEMO_PASSWORD } = require('./demo-mail-server.cjs');
 
 const shotsDir = path.resolve(process.argv[2] || path.join(os.tmpdir(), 'emargy-shots'));
-const step = (name) => console.log(`✔ ${name}`);
+let lastStep = 'start';
+const step = (name) => { lastStep = name; console.log(`✔ ${name}`); };
 
 async function setupAccount(page, servers, { projectName, name }) {
   await page.getByLabel(/Project name|اسم المشروع/).fill(projectName);
@@ -295,5 +296,11 @@ async function main() {
 
 main().catch((error) => {
   console.error('✘', error);
+  // On GitHub Actions, also report the failure as an annotation, which is visible without signing in.
+  if (process.env.GITHUB_ACTIONS) {
+    const text = `after "${lastStep}": ${String(error?.stack || error).slice(0, 1500)}`;
+    const escaped = text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+    console.log(`::error title=End-to-end test (${process.platform})::${escaped}`);
+  }
   process.exit(1);
 });
