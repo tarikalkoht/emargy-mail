@@ -1,6 +1,6 @@
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, Menu, clipboard, Notification, dialog, ipcMain, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, nativeImage, Notification, dialog, ipcMain, safeStorage, session, shell } = require('electron');
 const { Vault } = require('./vault.cjs');
 const { Database } = require('./db.cjs');
 const { SyncManager } = require('./sync.cjs');
@@ -9,6 +9,7 @@ const { createApi } = require('./api.cjs');
 const ai = require('./ai.cjs');
 const { Updater } = require('./updater.cjs');
 const { ImportanceWatcher } = require('./importance.cjs');
+const { selectNotifications, notificationText } = require('./notify.cjs');
 const { DEFAULT_SETTINGS } = require('./api.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
 
@@ -168,6 +169,16 @@ function registerHandlers() {
   handle('update:status', () => updater.status);
   handle('update:check', () => updater.check());
   handle('update:install', () => updater.install());
+  handle('scene:get', () => api.sceneImage());
+  handle('scene:set', (dataUrl) => api.setSceneImage(dataUrl ?? null));
+  // Unread count on the taskbar button, drawn by the interface as a small PNG.
+  handle('badge:set', ({ image, label } = {}) => {
+    if (!mainWindow) return false;
+    if (!image) { mainWindow.setOverlayIcon(null, ''); return true; }
+    if (!/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(String(image)) || image.length > 60_000) throw new Error('Invalid badge.');
+    mainWindow.setOverlayIcon(nativeImage.createFromDataURL(image), String(label || '').slice(0, 80));
+    return true;
+  });
   handle('clipboard:write', (value) => { clipboard.writeText(String(value ?? '').slice(0, 200_000)); return true; });
   handle('project:create', (input) => api.createProject(input));
   handle('project:delete', (id) => api.deleteProject(id));
@@ -231,15 +242,42 @@ function registerHandlers() {
   });
 }
 
+const liveNotifications = new Set(); // keep a reference so Windows click events still arrive
+
+function preferences() {
+  return api.state().settings;
+}
+
+function showNotification({ title, body, silent, onClick }) {
+  const notice = new Notification({ title: String(title).slice(0, 120), body: String(body || '').slice(0, 240), silent });
+  liveNotifications.add(notice);
+  const release = () => liveNotifications.delete(notice);
+  notice.on('click', () => {
+    release();
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    onClick?.();
+  });
+  notice.on('close', release);
+  notice.show();
+}
+
 function notifyNewMail({ newInbox = [] }) {
   if (!newInbox.length || !Notification.isSupported()) return;
-  if (db.getSetting('preferences', {}).notifications === false) return;
+  const prefs = preferences();
   const arabic = db.getSetting('language', 'en') === 'ar';
-  new Notification({
-    title: arabic ? `${newInbox.length} رسالة جديدة` : `${newInbox.length} new message${newInbox.length === 1 ? '' : 's'}`,
-    body: `${newInbox[0].from} · ${newInbox[0].subject}`.slice(0, 180),
-    silent: false,
-  }).show();
+  const projects = new Map(db.listProjects().map((p) => [p.id, p.name]));
+  for (const group of selectNotifications(newInbox, prefs)) {
+    const text = notificationText(group, { projectName: projects.get(group.projectId) || '', arabic, preview: prefs.notifyPreview !== false });
+    const single = group.items.length === 1;
+    showNotification({
+      ...text,
+      silent: prefs.notifySound === false,
+      onClick: () => (single ? emit('open:message', { id: group.items[0].id }) : emit('open:scope', { kind: 'project', projectId: group.projectId })),
+    });
+  }
 }
 
 const CATEGORY_LABELS = {
@@ -247,23 +285,25 @@ const CATEGORY_LABELS = {
   en: { offer: 'Offer', government: 'Government', project: 'Project', invoice: 'Invoice', legal: 'Legal', meeting: 'Meeting', other: 'Important' },
 };
 
-function notifyImportant(messages) {
-  if (!messages.length || !Notification.isSupported()) return;
+function notifyImportant(found) {
+  if (!found.length || !Notification.isSupported()) return;
+  const prefs = preferences();
+  // Important mail passes quiet hours, but "off" and muted projects are respected.
+  const messages = selectNotifications(found.map((m) => ({ ...m, aiImportant: true })), { ...prefs, notifyMode: prefs.notifyMode === 'off' ? 'off' : 'important' })
+    .flatMap((group) => group.items);
+  if (!messages.length) return;
   const arabic = db.getSetting('language', 'en') === 'ar';
   const first = messages[0];
   const label = CATEGORY_LABELS[arabic ? 'ar' : 'en'][first.aiNote?.category] || '';
-  const title = messages.length === 1
-    ? (arabic ? `بريد مهم · ${label}` : `Important mail · ${label}`)
-    : (arabic ? `${messages.length} رسائل مهمة تحتاج انتباهك` : `${messages.length} important messages need you`);
-  const notice = new Notification({ title, body: `${first.from} · ${first.subject}
-${first.aiNote?.reason || ''}`.slice(0, 220) });
-  notice.on('click', () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-    emit('open:message', { id: first.id });
+  const preview = prefs.notifyPreview !== false;
+  showNotification({
+    title: messages.length === 1
+      ? (arabic ? `بريد مهم · ${label}` : `Important mail · ${label}`)
+      : (arabic ? `${messages.length} رسائل مهمة تحتاج انتباهك` : `${messages.length} important messages need you`),
+    body: preview ? `${first.from} · ${first.subject}\n${first.aiNote?.reason || ''}` : (first.aiNote?.reason || ''),
+    silent: prefs.notifySound === false,
+    onClick: () => emit(messages.length === 1 ? 'open:message' : 'open:scope', messages.length === 1 ? { id: first.id } : { kind: 'unified', role: 'important' }),
   });
-  notice.show();
 }
 
 function openStorage() {

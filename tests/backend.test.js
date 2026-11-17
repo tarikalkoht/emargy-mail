@@ -116,6 +116,17 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     expect(api.state().counts.total).toBe(1);
   });
 
+  it('keeps the reader’s own empty-screen picture encrypted', () => {
+    const picture = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    expect(api.setSceneImage(picture).settings.emptyScene).toBe('custom');
+    expect(api.sceneImage()).toBe(picture);
+    const stored = JSON.stringify(db.db.prepare("SELECT value FROM settings WHERE key LIKE 'secret:%'").all());
+    expect(stored).not.toContain('iVBORw0KGgo');
+    expect(() => api.setSceneImage('data:text/html;base64,PHNjcmlwdD4=')).toThrow(/PNG/);
+    expect(api.setSceneImage(null).settings.emptyScene).toBe('trays');
+    expect(api.sceneImage()).toBe(null);
+  });
+
   it('keeps the account order the reader chooses', () => {
     const ids = api.state().accounts.map((a) => a.id);
     expect(api.reorderAccounts([...ids].reverse()).accounts.map((a) => a.id)).toEqual([...ids].reverse());

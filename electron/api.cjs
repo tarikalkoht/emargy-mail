@@ -16,6 +16,13 @@ const DEFAULT_SETTINGS = {
   aiProvider: 'auto',
   autoUpdate: true,
   aiAlerts: false,
+  notifyMode: 'all',
+  notifyPreview: true,
+  notifySound: true,
+  taskbarBadge: true,
+  quietHours: { enabled: false, from: '22:00', to: '07:00' },
+  mutedProjects: [],
+  emptyScene: 'trays',
 };
 const SETTING_RULES = {
   theme: (v) => ['system', 'light', 'dark'].includes(v),
@@ -27,6 +34,13 @@ const SETTING_RULES = {
   aiProvider: (v) => ['auto', 'claude', 'codex', 'off'].includes(v),
   autoUpdate: (v) => typeof v === 'boolean',
   aiAlerts: (v) => typeof v === 'boolean',
+  notifyMode: (v) => ['all', 'important', 'off'].includes(v),
+  notifyPreview: (v) => typeof v === 'boolean',
+  notifySound: (v) => typeof v === 'boolean',
+  taskbarBadge: (v) => typeof v === 'boolean',
+  quietHours: (v) => v && typeof v.enabled === 'boolean' && /^\d{2}:\d{2}$/.test(v.from) && /^\d{2}:\d{2}$/.test(v.to),
+  mutedProjects: (v) => Array.isArray(v) && v.length < 200 && v.every((id) => typeof id === 'string' && id.length < 80),
+  emptyScene: (v) => ['trays', 'dawn', 'night', 'plain', 'custom'].includes(v),
 };
 
 function text(value, max = 500) {
@@ -96,7 +110,12 @@ async function testImapLogin(account) {
 const { verifiedDkimDomains } = require('./dkim.cjs');
 
 function createApi({ db, sync, outbox, emit = () => {} }) {
-  const settings = () => ({ ...DEFAULT_SETTINGS, ...db.getSetting('preferences', {}) });
+  const settings = () => {
+    const saved = db.getSetting('preferences', {});
+    const merged = { ...DEFAULT_SETTINGS, ...saved };
+    if (saved.notifications === false && !saved.notifyMode) merged.notifyMode = 'off';
+    return merged;
+  };
 
   async function openOne(message) {
     let raw = db.getRaw(message.id);
@@ -247,6 +266,21 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       db.deleteAccount(accountId);
       db.audit('account.deleted', { accountId, email });
       return api.state();
+    },
+
+    /** The reader's own picture for empty screens, stored encrypted. */
+    sceneImage() {
+      return db.getSecret('sceneImage');
+    },
+
+    setSceneImage(dataUrl) {
+      if (dataUrl === null) {
+        db.setSecret('sceneImage', null);
+      } else {
+        if (!/^data:image\/(png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(String(dataUrl)) || dataUrl.length > 7_000_000) throw new Error('Choose a PNG, JPG, GIF or WebP image under 5 MB.');
+        db.setSecret('sceneImage', dataUrl);
+      }
+      return api.updateSettings({ emptyScene: dataUrl === null ? 'trays' : 'custom' });
     },
 
     reorderAccounts(ids) {

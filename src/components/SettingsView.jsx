@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, Check, ChevronDown, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, ChevronDown, ImagePlus, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { SceneArt } from './EmptyScene';
 import RichEditor from './RichEditor';
 import { ColorPicker, PROJECT_COLORS } from './AccountSetup';
 import { classNames } from '../lib/format';
 
 const api = window.emargy;
 const errorText = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-const TABS = ['general', 'accounts', 'signatures', 'projects', 'security'];
+const TABS = ['general', 'notifications', 'appearance', 'accounts', 'signatures', 'projects', 'security'];
 
 function Toggle({ checked, onChange, label, hint }) {
   return (
@@ -75,14 +76,104 @@ function AiSetting({ t, value, onChange }) {
   );
 }
 
+function Notifications({ t, state, setState }) {
+  const s = state.settings;
+  const update = async (changes) => setState(await api.updateSettings(changes));
+  const quiet = s.quietHours || { enabled: false, from: '22:00', to: '07:00' };
+  const muted = new Set(s.mutedProjects || []);
+  const toggleProject = (id) => {
+    const next = new Set(muted);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    update({ mutedProjects: [...next] });
+  };
+  return (
+    <div className="settings-section">
+      <Segmented label={t('notifyMode')} value={s.notifyMode || 'all'} options={[['all', t('notifyAll')], ['important', t('notifyImportant')], ['off', t('off')]]} onChange={(v) => update({ notifyMode: v })} />
+      <p className="setting-note">{t('notifyModeHint')}</p>
+      <Toggle label={t('notifyPreview')} hint={t('notifyPreviewHint')} checked={s.notifyPreview !== false} onChange={(v) => update({ notifyPreview: v })} />
+      <Toggle label={t('notifySound')} checked={s.notifySound !== false} onChange={(v) => update({ notifySound: v })} />
+      <Toggle label={t('taskbarBadge')} hint={t('taskbarBadgeHint')} checked={s.taskbarBadge !== false} onChange={(v) => update({ taskbarBadge: v })} />
+      <div className="setting-row quiet-hours">
+        <span><strong>{t('quietHours')}</strong><small>{t('quietHoursHint')}</small></span>
+        <span className="quiet-controls">
+          <input type="checkbox" role="switch" aria-label={t('quietHours')} checked={quiet.enabled} onChange={(e) => update({ quietHours: { ...quiet, enabled: e.target.checked } })} />
+          <label>{t('from')} <input type="time" value={quiet.from} disabled={!quiet.enabled} onChange={(e) => e.target.value && update({ quietHours: { ...quiet, from: e.target.value } })} /></label>
+          <label>{t('until')} <input type="time" value={quiet.to} disabled={!quiet.enabled} onChange={(e) => e.target.value && update({ quietHours: { ...quiet, to: e.target.value } })} /></label>
+        </span>
+      </div>
+      <Toggle label={t('aiAlerts')} hint={t('aiAlertsHint')} checked={Boolean(s.aiAlerts)} onChange={(v) => update({ aiAlerts: v })} />
+      <div className="setting-block">
+        <strong>{t('notifyProjects')}</strong>
+        <small>{t('notifyProjectsHint')}</small>
+        <div className="project-switches">
+          {state.projects.map((project) => (
+            <label key={project.id} className="project-switch" style={{ '--project': project.color }}>
+              <input type="checkbox" checked={!muted.has(project.id)} onChange={() => toggleProject(project.id)} />
+              <span className="project-tag">{project.name}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Appearance({ t, state, setState, onToast, onSceneChanged }) {
+  const s = state.settings;
+  const update = async (changes) => setState(await api.updateSettings(changes));
+  const [image, setImage] = useState(null);
+  useEffect(() => { api.sceneImage().then(setImage).catch(() => {}); }, []);
+  const pick = async () => {
+    try {
+      const dataUrl = await api.pickImage();
+      if (!dataUrl) return;
+      setState(await api.setSceneImage(dataUrl));
+      setImage(dataUrl);
+      onSceneChanged?.();
+    } catch (error) {
+      onToast(errorText(error), 'error');
+    }
+  };
+  const remove = async () => {
+    setState(await api.setSceneImage(null));
+    setImage(null);
+    onSceneChanged?.();
+  };
+  const choices = [['trays', t('sceneTrays')], ['dawn', t('sceneDawn')], ['night', t('sceneNight')], ['plain', t('scenePlain')]];
+  return (
+    <div className="settings-section">
+      <Segmented label={t('theme')} value={s.theme} options={[['system', t('themeSystem')], ['light', t('themeLight')], ['dark', t('themeDark')]]} onChange={(v) => update({ theme: v })} />
+      <Segmented label={t('density')} value={s.density} options={[['comfortable', t('densityComfortable')], ['compact', t('densityCompact')]]} onChange={(v) => update({ density: v })} />
+      <div className="setting-block">
+        <strong>{t('emptyScene')}</strong>
+        <small>{t('emptySceneHint')}</small>
+        <div className="scene-picker" role="radiogroup" aria-label={t('emptyScene')}>
+          {choices.map(([key, label]) => (
+            <button key={key} role="radio" aria-checked={s.emptyScene === key} className={classNames('scene-option', s.emptyScene === key && 'on')} onClick={() => update({ emptyScene: key })}>
+              <span className="scene-thumb">{key === 'plain' ? <span className="scene-plain-thumb" /> : <SceneArt kind={key} />}</span>
+              <span>{label}</span>
+            </button>
+          ))}
+          <button role="radio" aria-checked={s.emptyScene === 'custom'} className={classNames('scene-option', s.emptyScene === 'custom' && 'on')} onClick={() => (image ? update({ emptyScene: 'custom' }) : pick())}>
+            <span className="scene-thumb">{image ? <SceneArt kind="custom" image={image} /> : <span className="scene-add"><ImagePlus size={20} /></span>}</span>
+            <span>{t('sceneCustom')}</span>
+          </button>
+        </div>
+        <div className="scene-actions">
+          <button className="button ghost small" onClick={pick}><ImagePlus size={14} />{image ? t('sceneReplace') : t('sceneChoose')}</button>
+          {image && <button className="button ghost small danger-text" onClick={remove}><Trash2 size={14} />{t('sceneRemove')}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function General({ t, state, setState, language }) {
   const s = state.settings;
   const update = async (changes) => setState(await api.updateSettings(changes));
   return (
     <div className="settings-section">
       <Segmented label={t('language')} value={language} options={[['ar', 'العربية'], ['en', 'English']]} onChange={async (v) => setState(await api.setLanguage(v))} />
-      <Segmented label={t('theme')} value={s.theme} options={[['system', t('themeSystem')], ['light', t('themeLight')], ['dark', t('themeDark')]]} onChange={(v) => update({ theme: v })} />
-      <Segmented label={t('density')} value={s.density} options={[['comfortable', t('densityComfortable')], ['compact', t('densityCompact')]]} onChange={(v) => update({ density: v })} />
       <div className="setting-row">
         <span><strong>{t('undoSend')}</strong><small>{t('undoSendHint')}</small></span>
         <select value={s.undoSeconds} onChange={(e) => update({ undoSeconds: Number(e.target.value) })}>
@@ -91,9 +182,7 @@ function General({ t, state, setState, language }) {
       </div>
       <Toggle label={t('confirmBeforeSend')} hint={t('confirmBeforeSendHint')} checked={s.confirmBeforeSend} onChange={(v) => update({ confirmBeforeSend: v })} />
       <Toggle label={t('markReadOnOpen')} checked={s.markReadOnOpen} onChange={(v) => update({ markReadOnOpen: v })} />
-      <Toggle label={t('notifications')} hint={t('notificationsHint')} checked={s.notifications} onChange={(v) => update({ notifications: v })} />
       <AiSetting t={t} value={s.aiProvider || 'auto'} onChange={(v) => update({ aiProvider: v })} />
-      <Toggle label={t('aiAlerts')} hint={t('aiAlertsHint')} checked={Boolean(s.aiAlerts)} onChange={(v) => update({ aiAlerts: v })} />
       <UpdateSetting t={t} enabled={s.autoUpdate !== false} onChange={(v) => update({ autoUpdate: v })} />
     </div>
   );
@@ -280,7 +369,7 @@ function AccountsByProject({ t, state, setState, onToast, onAddAccount }) {
   );
 }
 
-export default function SettingsView({ t, state, setState, language, onToast, onView, onAddAccount, initialTab = 'general' }) {
+export default function SettingsView({ t, state, setState, language, onToast, onView, onAddAccount, onSceneChanged, initialTab = 'general' }) {
   const [tab, setTab] = useState(initialTab);
   return (
     <div className="page">
@@ -291,6 +380,8 @@ export default function SettingsView({ t, state, setState, language, onToast, on
         </div>
         <div className="settings-panel">
           {tab === 'general' && <General t={t} state={state} setState={setState} language={language} />}
+          {tab === 'notifications' && <Notifications t={t} state={state} setState={setState} />}
+          {tab === 'appearance' && <Appearance t={t} state={state} setState={setState} onToast={onToast} onSceneChanged={onSceneChanged} />}
           {tab === 'accounts' && <AccountsByProject t={t} state={state} setState={setState} onToast={onToast} onAddAccount={onAddAccount} />}
           {tab === 'signatures' && <Signatures t={t} state={state} setState={setState} onToast={onToast} />}
           {tab === 'projects' && <Projects t={t} state={state} setState={setState} onToast={onToast} />}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, Check, LoaderCircle, Mail } from 'lucide-react';
 import Modal from './components/Modal';
 import Logo from './components/Logo';
+import EmptyScene from './components/EmptyScene';
 import { translator } from './i18n';
 import Sidebar from './components/Sidebar';
 import MessageList from './components/MessageList';
@@ -70,6 +71,8 @@ export default function App() {
   const [composer, setComposer] = useState(null);
   const [update, setUpdate] = useState(null);
   const [addingTo, setAddingTo] = useState(null);
+  const [sceneImage, setSceneImage] = useState(null);
+  const [sceneVersion, setSceneVersion] = useState(0);
   const [toast, setToast] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const toastTimer = useRef(null);
@@ -122,14 +125,42 @@ export default function App() {
     const offOutbox = api.onOutboxChanged(() => refreshState().catch(() => {}));
     const offUpdate = api.onUpdateStatus(setUpdate);
     // Clicking an "important mail" notification opens that message.
+    const offScope = api.onOpenScope((next) => { setView('mail'); setScope(next); setThread(null); setSelectedId(null); });
     const offOpen = api.onOpenMessage(({ id }) => {
       setView('mail');
       setScope({ kind: 'unified', role: 'important' });
       openThreadRef.current?.({ id });
     });
     api.updateStatus().then(setUpdate).catch(() => {});
-    return () => { offStatus(); offMail(); offOutbox(); offUpdate(); offOpen(); };
+    return () => { offStatus(); offMail(); offOutbox(); offUpdate(); offOpen(); offScope(); };
   }, [refreshList, refreshState]);
+
+  // The reader's own picture for empty screens (kept encrypted by the main process).
+  const sceneKind = state.settings?.emptyScene || 'trays';
+  useEffect(() => {
+    if (sceneKind !== 'custom') { setSceneImage(null); return; }
+    api.sceneImage().then(setSceneImage).catch(() => setSceneImage(null));
+  }, [sceneKind, sceneVersion]);
+
+  // Unread count on the taskbar button.
+  const badgeCount = state.settings?.taskbarBadge === false ? 0 : (state.counts?.total || 0);
+  useEffect(() => {
+    if (!badgeCount) { api.setBadge({}).catch(() => {}); return; }
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#d92d20';
+    ctx.beginPath();
+    ctx.arc(16, 16, 15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${badgeCount > 99 ? 12 : badgeCount > 9 ? 15 : 18}px "Segoe UI", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeCount > 99 ? '99+' : String(badgeCount), 16, 17);
+    api.setBadge({ image: canvas.toDataURL('image/png'), label: `${badgeCount}` }).catch(() => {});
+  }, [badgeCount]);
 
   // Theme, density and direction.
   useEffect(() => {
@@ -418,6 +449,18 @@ export default function App() {
                   setThread((current) => current && ({ ...current, messages: current.messages.map((m) => (m.content.fromAddress === address ? { ...m, imagesTrusted: true } : m)) }));
                 }}
                 composer={composer?.inline ? composerNode : null}
+                empty={(
+                  <EmptyScene
+                    t={t}
+                    kind={sceneKind}
+                    image={sceneImage}
+                    name={state.accounts[0]?.displayName}
+                    unread={state.counts.total}
+                    important={state.counts.important}
+                    onOpenImportant={() => openScope({ kind: 'unified', role: 'important' })}
+                    onCustomize={() => setView('settings-appearance')}
+                  />
+                )}
               />
             )}
           </main>
@@ -429,7 +472,7 @@ export default function App() {
           {view === 'drafts' && <DraftsPage t={t} language={language} state={state} setState={setState} onOpenDraft={openDraft} />}
           {view === 'outbox' && <OutboxPage t={t} language={language} state={state} setState={setState} onToast={showToast} />}
           {view === 'activity' && <ActivityPage t={t} language={language} state={state} />}
-          {view.startsWith('settings') && <SettingsView key={view} t={t} state={state} setState={setState} language={language} onToast={showToast} onView={setView} onAddAccount={setAddingTo} initialTab={view.split('-')[1] || 'general'} />}
+          {view.startsWith('settings') && <SettingsView key={view} t={t} state={state} setState={setState} language={language} onToast={showToast} onView={setView} onAddAccount={setAddingTo} onSceneChanged={() => setSceneVersion((n) => n + 1)} initialTab={view.split('-')[1] || 'general'} />}
         </div>
       )}
       {addingTo && (

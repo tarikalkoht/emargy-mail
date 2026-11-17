@@ -55,6 +55,9 @@ async function main() {
     await page.waitForSelector('.app .row', { timeout: 30000 });
     await page.locator('.row').nth(3).waitFor();
     step(`first-run setup connected the account (${await page.locator('.row').count()} conversations)`);
+    await page.locator('.empty-scene.trays .scene-card h2').waitFor();
+    await shot('01b-empty-scene');
+    step('empty reading pane shows the picture and a greeting');
 
     await page.locator('.row', { hasText: 'Black Friday' }).click();
     await page.locator('.privacy-note').waitFor();
@@ -99,6 +102,25 @@ async function main() {
     await page.keyboard.press('Escape');
     await page.locator('.list-pane').waitFor();
     step('pages have a way back (button and Esc)');
+
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('tab', { name: 'Notifications' }).click();
+    await page.getByRole('radio', { name: 'Important only' }).click();
+    await page.locator('.quiet-controls input[type="checkbox"]').click();
+    await page.waitForFunction(() => document.querySelector('.quiet-controls input[type="checkbox"]')?.checked);
+    const prefs = await page.evaluate(() => window.emargy.getState().then((s) => s.settings));
+    if (prefs.notifyMode !== 'important' || !prefs.quietHours.enabled) throw new Error(`Notification settings not saved: ${JSON.stringify(prefs)}`);
+    await shot('03d-notification-settings');
+    await page.getByRole('radio', { name: 'All new mail' }).click();
+    step('notification settings: mode, quiet hours, per-project switches');
+
+    await page.getByRole('tab', { name: 'Appearance' }).click();
+    await page.getByRole('radio', { name: 'Night' }).click();
+    await page.locator('.back-button').click();
+    await page.getByRole('button', { name: 'All inboxes' }).click();
+    await page.locator('.empty-scene.night').waitFor();
+    await shot('03e-night-scene');
+    step('empty-screen picture can be changed (Night)');
 
     await page.getByRole('button', { name: 'Settings' }).click();
     await page.getByRole('tab', { name: 'Signatures' }).click();
@@ -186,6 +208,7 @@ async function main() {
     step('Arabic interface, right-to-left');
 
     await page.getByRole('button', { name: 'الإعدادات' }).click();
+    await page.getByRole('tab', { name: 'المظهر' }).click();
     await page.getByRole('radio', { name: 'داكن' }).click();
     await page.getByRole('button', { name: 'كل الوارد' }).click();
     await page.locator('.row', { hasText: 'Invoice' }).click();

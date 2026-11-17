@@ -153,7 +153,7 @@ Subject: ${c.subject || ''}
 ${c.text || ''}`;
 }
 
-export default function ThreadView({ t, language, thread, loading, project, account, folders, onAction, onReply, onTrustSender, onToast, composer }) {
+export default function ThreadView({ t, language, thread, loading, project, account, folders, onAction, onReply, onTrustSender, onToast, composer, empty }) {
   const [expanded, setExpanded] = useState(new Set());
   const [moveOpen, setMoveOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
@@ -176,6 +176,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
 
   if (loading) return <div className="pane-empty"><LoaderCircle className="spin" size={26} /></div>;
   if (!thread || !messages.length) {
+    if (empty) return empty;
     return (
       <div className="pane-empty">
         <Mail size={34} strokeWidth={1.4} />

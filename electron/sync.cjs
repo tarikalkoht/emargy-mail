@@ -181,7 +181,9 @@ class AccountWorker {
       this.setStatus('idle');
       this.manager.emit('mail:changed', {
         accountId: this.accountId,
-        newInbox: wasInitial ? [] : added.filter((m) => m.folderRole === 'inbox' && !m.read).map((m) => ({ subject: m.subject, from: m.from })),
+        newInbox: wasInitial ? [] : added.filter((m) => m.folderRole === 'inbox' && !m.read).map((m) => ({
+          id: m.id, projectId: m.projectId, accountId: m.accountId, subject: m.subject, from: m.from, trust: m.trust, important: m.important,
+        })),
       });
       return added.length;
     }).catch((error) => {

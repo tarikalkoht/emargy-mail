@@ -161,6 +161,20 @@ class Database {
       .run(key, JSON.stringify(value));
   }
 
+  /** A setting whose value is encrypted at rest (e.g. a personal picture). */
+  getSecret(key) {
+    const stored = this.getSetting(`secret:${key}`);
+    return stored ? this.vault.decryptJson(Buffer.from(stored, 'base64')).value : null;
+  }
+
+  setSecret(key, value) {
+    if (value === null || value === undefined) {
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(`secret:${key}`);
+      return;
+    }
+    this.setSetting(`secret:${key}`, Buffer.from(this.vault.encryptJson({ value })).toString('base64'));
+  }
+
   // Projects -----------------------------------------------------------------
   listProjects() {
     return this.db.prepare('SELECT id, created_at, data FROM projects ORDER BY created_at').all()

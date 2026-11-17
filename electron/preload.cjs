@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('emargy', {
   aiRun: invoke('ai:run'),
   aiCancel: invoke('ai:cancel'),
   copyText: invoke('clipboard:write'),
+  sceneImage: invoke('scene:get'),
+  setSceneImage: invoke('scene:set'),
+  setBadge: invoke('badge:set'),
   openHelp: invoke('help:open'),
   importanceStatus: invoke('importance:status'),
   runImportance: invoke('importance:run'),
@@ -64,4 +67,5 @@ contextBridge.exposeInMainWorld('emargy', {
   onOutboxChanged: subscribe('outbox:changed'),
   onUpdateStatus: subscribe('update:status'),
   onOpenMessage: subscribe('open:message'),
+  onOpenScope: subscribe('open:scope'),
 });
