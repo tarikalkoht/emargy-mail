@@ -43,6 +43,13 @@ function UpdateSetting({ t, enabled, onChange }) {
     available: t('updateAvailable', { version: status.version }),
     error: t('updateError', { error: status.error }),
   }[status.state];
+  if (status?.state === 'store') {
+    return (
+      <div className="setting-row">
+        <span><strong>{t('version', { version: status.currentVersion || '' })}</strong><small>{t('updateFromStore')}</small></span>
+      </div>
+    );
+  }
   return (
     <>
       <Toggle label={t('autoUpdate')} hint={t('autoUpdateHint')} checked={enabled} onChange={onChange} />

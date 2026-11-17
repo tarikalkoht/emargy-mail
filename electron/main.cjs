@@ -376,6 +376,8 @@ app.whenReady().then(() => {
     currentVersion: app.getVersion(),
     isPackaged: app.isPackaged,
     portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
+    // EMARGY_STORE only exists so tests can act like the Store package.
+    store: Boolean(process.windowsStore) || process.env.EMARGY_STORE === '1',
     emit: (status) => emit('update:status', status),
     onQuit: () => app.quit(),
   });

@@ -84,15 +84,17 @@ async function downloadVerified(url, manifest, destination) {
 }
 
 class Updater {
-  constructor({ currentVersion, isPackaged, portable, baseUrl = process.env.EMARGY_UPDATE_URL, publicKey = PUBLIC_KEY, emit = () => {}, onQuit = () => {} }) {
+  constructor({ currentVersion, isPackaged, portable, store = false, baseUrl = process.env.EMARGY_UPDATE_URL, publicKey = PUBLIC_KEY, emit = () => {}, onQuit = () => {} }) {
     this.publicKey = publicKey;
     this.currentVersion = currentVersion;
-    this.enabled = isPackaged || Boolean(baseUrl);
+    // A Microsoft Store copy is updated by the Store; it must never fetch or run an installer itself.
+    this.store = store;
+    this.enabled = !store && (isPackaged || Boolean(baseUrl));
     this.portable = portable;
     this.baseUrl = baseUrl;
     this.emit = emit;
     this.onQuit = onQuit;
-    this.status = { state: 'idle', currentVersion };
+    this.status = { state: store ? 'store' : 'idle', currentVersion };
     this.timer = null;
   }
 

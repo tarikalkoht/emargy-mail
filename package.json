@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "test:app": "npm run build && node scripts/e2e-app.cjs",
     "demo:server": "node scripts/demo-mail-server.cjs",
-    "dist:win": "npm run test && npm run build && electron-builder --win nsis portable"
+    "dist:win": "npm run test && npm run build && electron-builder --win nsis portable",
+    "dist:store": "npm run test && npm run build && electron-builder --win appx"
   },
   "build": {
     "appId": "com.emargy.mail",
@@ -44,6 +45,22 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
+    },
+    "appx": {
+      "artifactName": "Emargy-Mail-Store-${version}.${ext}",
+      "identityName": "EmargyLLC.EmargyMail",
+      "publisher": "CN=Emargy LLC",
+      "publisherDisplayName": "Emargy",
+      "applicationId": "EmargyMail",
+      "displayName": "Emargy Mail",
+      "backgroundColor": "transparent",
+      "showNameOnTiles": true,
+      "languages": [
+        "en-US",
+        "ar"
+      ],
+      "minVersion": "10.0.17763.0",
+      "maxVersionTested": "10.0.26100.0"
     }
   },
   "dependencies": {

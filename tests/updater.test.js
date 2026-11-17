@@ -82,6 +82,13 @@ describe('signed updates', () => {
     expect(await updater({ portable: true }).check()).toMatchObject({ state: 'available', version: '9.9.9' });
   });
 
+  it('never checks or installs in the Microsoft Store copy', async () => {
+    publish(manifestFor(installer), installer);
+    const u = updater({ store: true });
+    expect(await u.check()).toMatchObject({ state: 'store' });
+    expect(() => u.install()).toThrow();
+  });
+
   it('will not run an installer that changed after it was verified', async () => {
     publish(manifestFor(installer), installer);
     const u = updater();
