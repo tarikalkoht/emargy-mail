@@ -48,8 +48,8 @@
     },
     "appx": {
       "artifactName": "Emargy-Mail-Store-${version}.${ext}",
-      "identityName": "EmargyLLC.EmargyMail",
-      "publisher": "CN=Emargy LLC",
+      "identityName": "Emargy.EmargyMail",
+      "publisher": "CN=112B294A-54AE-4C96-B3E6-995BF12817D1",
       "publisherDisplayName": "Emargy",
       "applicationId": "EmargyMail",
       "displayName": "Emargy Mail",
