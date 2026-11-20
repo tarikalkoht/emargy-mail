@@ -10,6 +10,7 @@ const ai = require('./ai.cjs');
 const oauth = require('./oauth.cjs');
 const { Updater } = require('./updater.cjs');
 const { ImportanceWatcher } = require('./importance.cjs');
+const { ReminderWatcher } = require('./reminders.cjs');
 const { selectNotifications, notificationText } = require('./notify.cjs');
 const { DEFAULT_SETTINGS } = require('./api.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
@@ -25,6 +26,7 @@ let outbox;
 let api;
 let updater;
 let importance;
+let reminders;
 let tray = null;
 let trayIcon = null;
 let quitting = false;
@@ -360,6 +362,11 @@ function registerHandlers() {
   handle('account:reorder', (ids) => api.reorderAccounts(ids));
   handle('project:reorder', (ids) => api.reorderProjects(ids));
   handle('storage:get', () => api.storage());
+  handle('send:now', (id) => api.sendNow(id));
+  handle('snooze:set', ({ messageId, until }) => api.snooze(messageId, until));
+  handle('reminder:followup', ({ messageId, days }) => api.remindIfNoReply(messageId, days));
+  handle('reminder:postpone', ({ id, until }) => api.postponeReminder(id, until));
+  handle('reminder:dismiss', (id) => api.dismissReminder(id));
   handle('storage:free', () => api.freeSpace());
   // Microsoft sign-in opens the reader's own browser; the token never passes through the interface.
   handle('account:microsoft', async (input) => {
@@ -473,6 +480,40 @@ function notifyNewMail({ newInbox = [] }) {
   }
 }
 
+/** A follow-up with no reply, or a snoozed conversation back in the inbox. */
+function notifyReminder(item) {
+  if (!Notification.isSupported()) return;
+  const prefs = preferences();
+  if (prefs.notifications === false || prefs.notifyMode === 'off') return;
+  const arabic = db.getSetting('language', 'en') === 'ar';
+  const subject = item.subject || (arabic ? '(بلا عنوان)' : '(no subject)');
+  const followUp = item.kind === 'followup';
+  const who = followUp ? displayAddress(item.to) : displayAddress(item.from);
+  showNotification({
+    title: followUp
+      ? (arabic ? `لم يصلك رد بعد${who ? ` من ${who}` : ''}` : `No reply yet${who ? ` from ${who}` : ''}`)
+      : (arabic ? 'عادت رسالة أجّلتها' : 'A snoozed conversation is back'),
+    body: followUp
+      ? (arabic ? `${subject}\nأرسلتها قبل ${arabicDays(item.days)}. هل تريد المتابعة؟` : `${subject}\nSent ${item.days} day${item.days === 1 ? '' : 's'} ago. Time to follow up?`)
+      : `${who ? `${who} · ` : ''}${subject}`,
+    silent: prefs.notifySound === false,
+    onClick: () => (item.messageId ? emit('open:message', { id: item.messageId }) : emit('open:view', 'reminders')),
+  });
+}
+
+function arabicDays(n) {
+  if (n === 1) return 'يوم';
+  if (n === 2) return 'يومين';
+  return n >= 3 && n <= 10 ? `${n} أيام` : `${n} يوماً`;
+}
+
+/** "Name <a@b>, c@d" -> "Name" (first person only, for a short notification line). */
+function displayAddress(value = '') {
+  const first = String(value).split(/[,;]/)[0].trim();
+  const named = first.match(/^"?([^"<]+?)"?\s*<[^>]+>$/);
+  return (named ? named[1] : first.replace(/[<>]/g, '')).slice(0, 60);
+}
+
 const CATEGORY_LABELS = {
   ar: { offer: 'عرض', government: 'جهة حكومية', project: 'مشروع', invoice: 'فاتورة', legal: 'قانوني', meeting: 'اجتماع', other: 'مهم' },
   en: { offer: 'Offer', government: 'Government', project: 'Project', invoice: 'Invoice', legal: 'Legal', meeting: 'Meeting', other: 'Important' },
@@ -584,6 +625,7 @@ app.whenReady().then(() => {
     emit,
     notify: notifyImportant,
   });
+  reminders = new ReminderWatcher({ db, sync, emit: forward, notify: notifyReminder });
   registerHandlers();
   createTray();
   createWindow();
@@ -591,6 +633,7 @@ app.whenReady().then(() => {
   setTimeout(() => importance.poke(), 15_000);
   sync.start();
   outbox.start();
+  reminders.start();
   if (api.state().settings.autoUpdate) updater.start();
   // Keep the local copy within the chosen retention: shortly after start, then daily.
   const upkeep = () => { try { api.maintainStorage(); } catch { /* next round */ } };
@@ -609,6 +652,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   stopping = true;
   outbox?.stop();
+  reminders?.stop();
   sync.stop().finally(() => {
     db?.close();
     app.quit();

@@ -97,3 +97,44 @@ export function squarePicture(dataUrl, size = 128) {
     image.src = dataUrl;
   });
 }
+
+function atHour(base, days, hour) {
+  const date = new Date(base);
+  date.setDate(date.getDate() + days);
+  date.setHours(hour, 0, 0, 0);
+  return date.getTime();
+}
+
+/**
+ * Ready-made times for send later and snooze. The week starts on Sunday for Arabic readers
+ * and on Monday otherwise.
+ */
+export function quickTimes(language, now = Date.now()) {
+  const today = new Date(now);
+  const options = [];
+  const later = new Date(now + 3 * 60 * 60_000);
+  later.setMinutes(0, 0, 0);
+  if (later.getDate() === today.getDate() && later.getHours() <= 20) options.push({ key: 'laterToday', at: later.getTime() + 60 * 60_000 });
+  options.push({ key: 'tomorrowMorning', at: atHour(now, 1, 8) });
+  options.push({ key: 'tomorrowAfternoon', at: atHour(now, 1, 13) });
+  const weekStart = language === 'ar' ? 0 : 1;
+  const ahead = ((weekStart - today.getDay() + 7) % 7) || 7;
+  options.push({ key: 'nextWeek', at: atHour(now, ahead, 8) });
+  return options;
+}
+
+/** "Tue 08:00", or "21 Nov, 08:00" when more than a week away. */
+export function formatWhen(value, language) {
+  const date = new Date(value);
+  const locale = language === 'ar' ? 'ar' : 'en-GB';
+  const days = (date - Date.now()) / 86_400_000;
+  const options = days < 6 && days > -1 ? { weekday: 'short', hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+  return new Intl.DateTimeFormat(locale, options).format(date);
+}
+
+/** Value for <input type="datetime-local"> in local time. */
+export function localInputValue(value) {
+  const date = new Date(value);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}

@@ -694,3 +694,21 @@ button.page-row-main:hover { background: var(--surface-2); }
 .provider-guide strong { display: inline-flex; align-items: center; gap: 6px; }
 .check.wide { grid-column: 1 / -1; }
 .trust-warning button.primary { display: inline-flex; align-items: center; gap: 5px; border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+
+/* Send later, snooze and reminders */
+.when-picker { display: grid; gap: 14px; }
+.when-options { display: grid; gap: 6px; }
+.when-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); text-align: start; }
+.when-option:hover { background: var(--surface-2); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.when-option small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.when-custom > span { display: inline-flex; align-items: center; gap: 6px; }
+.when-custom input { height: 36px; }
+.send-split { display: inline-flex; }
+.send-split > .button.primary:first-child { border-start-end-radius: 0; border-end-end-radius: 0; }
+.send-split > .send-more { border-start-start-radius: 0; border-end-start-radius: 0; padding: 0 8px; border-inline-start: 1px solid color-mix(in srgb, var(--accent-ink) 25%, transparent); }
+.remind-chip.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.reminder-section { margin-bottom: 18px; }
+.reminder-section h2 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 4px 6px 4px; }
+.page-row.due .page-row-text strong { font-weight: 600; }
+.reminder-actions { display: flex; gap: 6px; flex: none; }
+.scheduled-tag { color: var(--accent); }

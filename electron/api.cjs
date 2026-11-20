@@ -78,6 +78,17 @@ function emailAddress(value) {
   return email;
 }
 
+const DAY_MS = 86_400_000;
+const FOLLOW_UP_DAYS = new Set([1, 2, 3, 5, 7, 14, 30]);
+
+/** A time chosen by the reader (send later, snooze, remind): in the future, within a year. */
+function futureTime(value, now = Date.now()) {
+  const at = Number(value);
+  if (!Number.isFinite(at) || at < now + 30_000) throw new Error('Choose a time in the future.');
+  if (at > now + 366 * DAY_MS) throw new Error('Choose a time within the next year.');
+  return Math.round(at);
+}
+
 /** An account picture: a small image the app already resized, or null to remove it. */
 function accountPicture(value) {
   if (value === null || value === '') return null;
@@ -167,6 +178,11 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
     }));
   }
 
+  /** A message that will not go out needs no reply reminder. */
+  function dropFollowUps(outboxId) {
+    for (const r of db.listReminders()) if (r.kind === 'followup' && r.outboxId === outboxId) db.removeReminder(r.id);
+  }
+
   function each(messageIds, work) {
     return Promise.all(ids(messageIds).map(async (id) => work(db.getMessage(id))));
   }
@@ -184,6 +200,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
         signatures: db.listSignatures(),
         drafts: db.listDrafts().map(({ attachments, html, body, ...draft }) => ({ ...draft, attachmentCount: attachments?.length || 0 })),
         outbox: db.listOutbox().map(({ raw, envelope, draft, ...item }) => item),
+        reminders: api.reminders(),
       };
     },
 
@@ -493,6 +510,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
     /** Open a whole conversation: every message, decrypted and parsed, oldest first. */
     async openThread(id) {
       const messages = db.threadMessages(text(id, 200));
+      if (messages[0] && db.clearReturned(messages[0].accountId, messages[0].threadKey)) emit('mail:changed', { newInbox: [] });
       const opened = [];
       for (const message of messages) {
         const content = await openOne(message);
@@ -688,26 +706,110 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       const draft = sanitizeDraft(input || {});
       if (!draft.to && !draft.cc && !draft.bcc) throw new Error('Add at least one recipient.');
       const account = db.getAccount(draft.accountId);
-      const { raw, envelope, messageId } = await buildRawMessage(account, draft);
-      const delay = settings().undoSeconds * 1000;
+      const now = Date.now();
+      // Send later: the message waits in the outbox until its time (and can be cancelled).
+      const scheduledAt = input?.sendAt ? futureTime(input.sendAt, now) : null;
+      const followUpDays = input?.followUpDays ? Number(input.followUpDays) : 0;
+      if (followUpDays && !FOLLOW_UP_DAYS.has(followUpDays)) throw new Error('Choose when to be reminded.');
+      const { raw, envelope, messageId } = await buildRawMessage(account, scheduledAt ? { ...draft, date: new Date(scheduledAt) } : draft);
+      const sendAt = scheduledAt || now + settings().undoSeconds * 1000;
       const outboxId = db.enqueueOutbox(account.id, {
-        to: draft.to, subject: draft.subject, messageId, envelope, raw: raw.toString('base64'), draft,
-      }, Date.now() + delay);
+        to: draft.to, subject: draft.subject, messageId, envelope, raw: raw.toString('base64'), draft, scheduled: Boolean(scheduledAt),
+      }, sendAt);
       if (draft.id) db.deleteDraft(draft.id);
-      db.audit('message.approved_by_user', { outboxId, accountId: account.id, to: draft.to, subject: draft.subject });
-      if (delay) outbox.schedule(delay + 250);
-      else await outbox.process();
-      return { state: api.state(), outboxId, sendAt: Date.now() + delay };
+      if (followUpDays) {
+        db.addReminder({
+          kind: 'followup',
+          accountId: account.id,
+          threadKey: db.threadKeyFor({ references: draft.references, inReplyTo: draft.inReplyTo, messageId }),
+          dueAt: sendAt + followUpDays * DAY_MS,
+          data: { outboxId, subject: draft.subject, to: [draft.to, draft.cc].filter(Boolean).join(', '), messageId, sentAt: sendAt, days: followUpDays },
+        });
+      }
+      db.audit(scheduledAt ? 'message.scheduled' : 'message.approved_by_user', { outboxId, accountId: account.id, to: draft.to, subject: draft.subject, sendAt: scheduledAt || undefined, followUpDays: followUpDays || undefined });
+      const delay = sendAt - now;
+      if (!delay) await outbox.process();
+      else if (delay < 6 * 60 * 60_000) outbox.schedule(delay + 250); // later ones are picked up by the outbox's own round
+      return { state: api.state(), outboxId, sendAt, scheduled: Boolean(scheduledAt) };
     },
 
-    /** Undo send: only possible while the message is still waiting in the outbox. */
+    /** Undo send (or cancel a scheduled one): only while the message is still waiting in the outbox. */
     cancelSend(outboxId) {
       const item = db.listOutbox().find((entry) => entry.id === outboxId);
       if (!item || item.status !== 'queued' || item.attempts > 0) throw new Error('The message was already sent.');
       db.removeOutbox(item.id);
+      dropFollowUps(item.id);
       const saved = db.saveDraft({ ...item.draft, id: undefined });
       db.audit('message.send_undone', { outboxId: item.id });
       return { state: api.state(), draft: db.getDraft(saved.id) };
+    },
+
+    /** A scheduled message the reader wants to go right away. */
+    async sendNow(outboxId) {
+      const item = db.listOutbox().find((entry) => entry.id === text(outboxId, 64));
+      if (!item || item.status !== 'queued') throw new Error('This message is not waiting to be sent.');
+      const now = Date.now();
+      db.updateOutbox(item.id, { status: 'queued', attempts: item.attempts, nextAttemptAt: now, lastError: item.lastError });
+      for (const reminder of db.listReminders().filter((r) => r.kind === 'followup' && r.outboxId === item.id && r.status === 'waiting')) {
+        db.updateReminder(reminder.id, { dueAt: now + reminder.days * DAY_MS, data: { sentAt: now } });
+      }
+      await outbox.process();
+      return api.state();
+    },
+
+    // Reminders and snooze --------------------------------------------------------
+    /** What the Reminders page shows (finished ones are left out). */
+    reminders() {
+      return db.listReminders()
+        .filter((r) => ['waiting', 'due'].includes(r.status))
+        .map(({ threadKey, ...r }) => ({ ...r, openId: db.latestInThread(r.accountId, threadKey)?.id || null }));
+    },
+
+    /** Hide a conversation until `until`; it then comes back to the inbox, unread. */
+    snooze(messageId, until) {
+      const anchor = db.getMessage(text(messageId, 200));
+      const dueAt = futureTime(until);
+      for (const r of db.listReminders()) {
+        if (r.kind === 'snooze' && r.accountId === anchor.accountId && r.threadKey === anchor.threadKey) db.removeReminder(r.id);
+      }
+      db.addReminder({ kind: 'snooze', accountId: anchor.accountId, threadKey: anchor.threadKey, dueAt, data: { subject: anchor.subject, from: anchor.from } });
+      db.audit('snooze.set', { subject: anchor.subject, until: new Date(dueAt).toISOString() });
+      emit('mail:changed', { accountId: anchor.accountId, newInbox: [] });
+      return api.state();
+    },
+
+    /** Add a follow-up reminder to mail already sent (from the conversation view). */
+    remindIfNoReply(messageId, days) {
+      const anchor = db.getMessage(text(messageId, 200));
+      const count = Number(days);
+      if (!FOLLOW_UP_DAYS.has(count)) throw new Error('Choose when to be reminded.');
+      const now = Date.now();
+      for (const r of db.listReminders()) {
+        if (r.kind === 'followup' && r.status === 'waiting' && r.accountId === anchor.accountId && r.threadKey === anchor.threadKey) db.removeReminder(r.id);
+      }
+      db.addReminder({
+        kind: 'followup', accountId: anchor.accountId, threadKey: anchor.threadKey, dueAt: now + count * DAY_MS,
+        data: { subject: anchor.subject, to: anchor.folderRole === 'sent' ? [anchor.to, anchor.cc].filter(Boolean).join(', ') : anchor.from, sentAt: now, days: count },
+      });
+      db.audit('reminder.set', { subject: anchor.subject, days: count });
+      return api.state();
+    },
+
+    /** Remind again later (a due follow-up), or move a snooze to another time. */
+    postponeReminder(id, until) {
+      const reminder = db.getReminder(text(id, 64));
+      db.updateReminder(reminder.id, { status: 'waiting', dueAt: futureTime(until) });
+      emit('mail:changed', { newInbox: [] });
+      return api.state();
+    },
+
+    /** Finished with it: a follow-up the reader handled, or a snooze ended early. */
+    dismissReminder(id) {
+      const reminder = db.getReminder(text(id, 64));
+      db.removeReminder(reminder.id);
+      db.audit(reminder.kind === 'snooze' ? 'snooze.cancelled' : 'reminder.dismissed', { subject: reminder.subject });
+      emit('mail:changed', { newInbox: [] });
+      return api.state();
     },
 
     retryOutbox(id) {
@@ -720,6 +822,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       if (!item) throw new Error('Outbox item not found.');
       if (item.status === 'sending') throw new Error('This message is being sent right now.');
       db.removeOutbox(item.id);
+      if (item.status !== 'sent') dropFollowUps(item.id);
       db.audit('outbox.removed', { outboxId: item.id, status: item.status });
       return api.state();
     },

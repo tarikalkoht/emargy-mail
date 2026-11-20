@@ -1,5 +1,5 @@
 import {
-  Activity, AlertOctagon, Archive, ChevronDown, Clock, FileText, Sparkles, Flag, Folder, Inbox, Layers, PenSquare, Plus, Send, Settings, Trash2,
+  Activity, AlertOctagon, Archive, BellRing, ChevronDown, Clock, FileText, Sparkles, Flag, Folder, Inbox, Layers, PenSquare, Plus, Send, Settings, Trash2,
 } from 'lucide-react';
 import { useState } from 'react';
 import { classNames } from '../lib/format';
@@ -61,6 +61,8 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
   const { projects, accounts, folders, counts, drafts, outbox } = state;
   const pending = outbox.filter((item) => item.status === 'queued' || item.status === 'failed').length;
   const failed = outbox.some((item) => item.status === 'failed');
+  const reminders = state.reminders || [];
+  const dueReminders = reminders.filter((r) => r.status === 'due').length;
   const isMail = view === 'mail';
   const open = (next) => { onView('mail'); onOpen(next); };
 
@@ -75,6 +77,7 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
         <NavItem icon={Send} label={t('allSent')} active={isMail && sameScope(scope, { kind: 'unified', role: 'sent' })} onClick={() => open({ kind: 'unified', role: 'sent' })} />
         <NavItem icon={FileText} label={t('drafts')} count={drafts.length} active={view === 'drafts'} onClick={() => onView('drafts')} />
         {(pending > 0 || view === 'outbox') && <NavItem icon={Clock} label={t('outbox')} count={pending} tone={failed ? 'warn' : ''} active={view === 'outbox'} onClick={() => onView('outbox')} />}
+        {(reminders.length > 0 || view === 'reminders') && <NavItem icon={BellRing} label={t('reminders')} count={dueReminders} tone={dueReminders ? 'warn' : ''} active={view === 'reminders'} onClick={() => onView('reminders')} />}
       </div>
 
       <div className="nav-heading">

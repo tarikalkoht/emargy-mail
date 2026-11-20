@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, ShieldAlert, ShieldCheck, Sparkles, Trash2,
+  AlarmClock, Archive, BellRing, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, ShieldAlert, ShieldCheck, Sparkles, Trash2,
 } from 'lucide-react';
 import { DeliveryBadge, TrustBadge } from './MessageList';
 import AiPanel from './AiPanel';
@@ -158,10 +158,11 @@ Subject: ${c.subject || ''}
 ${c.text || ''}`;
 }
 
-export default function ThreadView({ t, language, thread, loading, project, account, folders, state, onAction, onReply, onTrustSender, onToast, composer, empty }) {
+export default function ThreadView({ t, language, thread, loading, project, account, folders, state, onAction, onSnooze, onRemind, onReply, onTrustSender, onToast, composer, empty }) {
   const [expanded, setExpanded] = useState(new Set());
   const [moveAt, setMoveAt] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [remindOpen, setRemindOpen] = useState(false);
   // Mail you sent shows the sending account's own picture.
   const pictures = useMemo(() => new Map((state?.accounts || []).filter((a) => a.picture).map((a) => [String(a.email).toLowerCase(), a.picture])), [state?.accounts]);
   const [job, setJob] = useState(null);
@@ -238,6 +239,20 @@ export default function ThreadView({ t, language, thread, loading, project, acco
         <button className="icon-button quiet" onClick={() => onAction('trash', ids)} title={`${t('delete')} (Del)`} aria-label={t('delete')}><Trash2 size={17} /></button>
         <button className={classNames('icon-button quiet', flagged && 'flag-on')} onClick={() => onAction(flagged ? 'unflag' : 'flag', ids)} title={`${flagged ? t('unflag') : t('flag')} (S)`} aria-label={t('flag')}><Flag size={17} /></button>
         <button className="icon-button quiet" onClick={() => onAction('unread', ids)} title={`${t('markUnread')} (U)`} aria-label={t('markUnread')}><MailOpen size={17} /></button>
+        {onSnooze && messages.some((m) => m.folderRole === 'inbox') && (
+          <button className="icon-button quiet" onClick={() => onSnooze(last)} title={`${t('snooze')} (B)`} aria-label={t('snooze')}><AlarmClock size={17} /></button>
+        )}
+        {onRemind && (
+          <span className="tool-menu">
+            <button className="icon-button quiet" onClick={() => setRemindOpen(!remindOpen)} title={t('remindIfNoReply')} aria-label={t('remindIfNoReply')} aria-expanded={remindOpen}><BellRing size={17} /></button>
+            {remindOpen && (
+              <div className="menu">
+                <span className="menu-note">{t('remindIfNoReply')}</span>
+                {[1, 3, 5, 7, 14].map((n) => <button key={n} onClick={() => { setRemindOpen(false); onRemind(last.id, n); }}>{t('afterDays', { n })}</button>)}
+              </div>
+            )}
+          </span>
+        )}
         <button className="icon-button quiet" onClick={(e) => { const box = e.currentTarget.getBoundingClientRect(); setMoveAt(moveAt ? null : { x: box.left, y: box.bottom + 4 }); }} title={t('moveTo')} aria-label={t('moveTo')}><FolderInput size={17} /></button>
         <button className={classNames('icon-button quiet', inJunk && 'flag-on')} onClick={() => onAction(inJunk ? 'notSpam' : 'spam', ids)} title={inJunk ? t('notSpam') : t('reportSpam')} aria-label={inJunk ? t('notSpam') : t('reportSpam')}>{inJunk ? <ShieldCheck size={17} /> : <ShieldAlert size={17} />}</button>
         {moveAt && state && (

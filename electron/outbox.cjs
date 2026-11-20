@@ -1,4 +1,4 @@
-const { sendRawMessage } = require('./mail.cjs');
+const { buildRawMessage, sendRawMessage } = require('./mail.cjs');
 const { freshAccount } = require('./oauth.cjs');
 const { sendWithResend } = require('./resend.cjs');
 
@@ -56,12 +56,20 @@ class Outbox {
 
   async deliver(item) {
     const account = await freshAccount(this.db, item.accountId);
-    const raw = Buffer.from(item.raw, 'base64');
+    let raw = Buffer.from(item.raw, 'base64');
+    let { envelope } = item;
+    if (item.scheduled && item.draft && account.authType !== 'resend') {
+      // Written earlier, sent now: date it now (it may be late if the computer was off),
+      // keeping its Message-ID so a follow-up reminder still recognises the replies.
+      const built = await buildRawMessage(account, { ...item.draft, date: new Date(), messageId: item.messageId });
+      raw = built.raw;
+      envelope = built.envelope;
+    }
     this.db.updateOutbox(item.id, { status: 'sending', attempts: item.attempts, nextAttemptAt: item.nextAttemptAt });
     this.emit('outbox:changed', {});
     try {
       // Resend accounts send through its API; everything else through SMTP.
-      const result = account.authType === 'resend' ? await this.sendApi(account, item) : await this.send(account, raw, item.envelope);
+      const result = account.authType === 'resend' ? await this.sendApi(account, item) : await this.send(account, raw, envelope);
       this.db.updateOutbox(item.id, { status: 'sent', attempts: item.attempts + 1, nextAttemptAt: 0, sentAt: Date.now() });
       this.db.audit('message.sent', { outboxId: item.id, accountId: account.id, to: item.envelope.to, messageId: result.messageId });
       if (account.authType !== 'resend' && !providerSavesSentCopy(account)) {

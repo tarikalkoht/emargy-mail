@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('emargy', {
   reorderProjects: invoke('project:reorder'),
   storage: invoke('storage:get'),
   freeSpace: invoke('storage:free'),
+  sendNow: invoke('send:now'),
+  snooze: invoke('snooze:set'),
+  remindIfNoReply: invoke('reminder:followup'),
+  postponeReminder: invoke('reminder:postpone'),
+  dismissReminder: invoke('reminder:dismiss'),
   addMicrosoftAccount: invoke('account:microsoft'),
   renewMicrosoft: invoke('account:microsoftRenew'),
   microsoftAvailable: invoke('microsoft:available'),
@@ -84,4 +89,5 @@ contextBridge.exposeInMainWorld('emargy', {
   onUpdateStatus: subscribe('update:status'),
   onOpenMessage: subscribe('open:message'),
   onOpenScope: subscribe('open:scope'),
+  onOpenView: subscribe('open:view'),
 });
