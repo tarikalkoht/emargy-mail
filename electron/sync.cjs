@@ -90,12 +90,28 @@ class AccountWorker {
 
   /** Serialize all work on this account's single IMAP connection. */
   run(work) {
+    this.pending = (this.pending || 0) + 1;
     const next = this.queue.then(() => this.manager.semaphore.use(async () => {
-      await this.ensureConnected();
-      return work(this.client);
+      try {
+        await this.ensureConnected();
+        return await work(this.client);
+      } finally {
+        this.pending -= 1;
+        if (!this.pending) await this.watchInbox();
+      }
     }));
     this.queue = next.catch(() => {});
     return next;
+  }
+
+  /**
+   * When the connection has nothing else to do, keep the inbox selected: the client then
+   * waits on it with IMAP IDLE, so new mail arrives at once instead of at the next round.
+   */
+  async watchInbox() {
+    const client = this.client;
+    if (!client?.usable || this.stopped || client.mailbox?.path?.toUpperCase() === 'INBOX') return;
+    await client.mailboxOpen('INBOX').catch(() => {});
   }
 
   async ensureConnected() {

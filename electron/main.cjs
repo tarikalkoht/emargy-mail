@@ -358,6 +358,9 @@ function registerHandlers() {
   handle('account:update', (id, changes) => api.updateAccount(id, changes));
   handle('account:delete', (id) => api.deleteAccount(id));
   handle('account:reorder', (ids) => api.reorderAccounts(ids));
+  handle('project:reorder', (ids) => api.reorderProjects(ids));
+  handle('storage:get', () => api.storage());
+  handle('storage:free', () => api.freeSpace());
   // Microsoft sign-in opens the reader's own browser; the token never passes through the interface.
   handle('account:microsoft', async (input) => {
     const signed = await oauth.signIn({ loginHint: String(input?.email || '').slice(0, 320), openBrowser: (url) => shell.openExternal(url) });
@@ -589,6 +592,10 @@ app.whenReady().then(() => {
   sync.start();
   outbox.start();
   if (api.state().settings.autoUpdate) updater.start();
+  // Keep the local copy within the chosen retention: shortly after start, then daily.
+  const upkeep = () => { try { api.maintainStorage(); } catch { /* next round */ } };
+  setTimeout(upkeep, 2 * 60_000);
+  setInterval(upkeep, 24 * 60 * 60_000).unref?.();
 });
 
 app.on('web-contents-created', (_event, contents) => {

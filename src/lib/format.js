@@ -77,3 +77,23 @@ export function textToHtml(value = '') {
 export function paragraphsToHtml(value = '') {
   return String(value).trim().split(/\n\s*\n/).map((block) => `<p dir="auto">${block.split('\n').map(escapeHtml).join('<br>')}</p>`).join('');
 }
+
+/** Crop a picture to a centered square and shrink it, so an account picture stays a few KB. */
+export function squarePicture(dataUrl, size = 128) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const side = Math.min(image.naturalWidth, image.naturalHeight);
+      if (!side) { reject(new Error('This picture could not be read.')); return; }
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext('2d');
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(image, (image.naturalWidth - side) / 2, (image.naturalHeight - side) / 2, side, side, 0, 0, size, size);
+      resolve(canvas.toDataURL('image/webp', 0.9));
+    };
+    image.onerror = () => reject(new Error('This picture could not be read.'));
+    image.src = dataUrl;
+  });
+}

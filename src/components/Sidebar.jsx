@@ -4,6 +4,7 @@ import {
 import { useState } from 'react';
 import { classNames } from '../lib/format';
 import { DRAG_TYPE } from './MessageList';
+import AccountAvatar from './AccountAvatar';
 
 const ROLE_ORDER = ['inbox', 'drafts', 'sent', 'archive', 'all', 'junk', 'trash', 'custom'];
 const ROLE_ICON = { inbox: Inbox, drafts: FileText, sent: Send, archive: Archive, all: Layers, junk: AlertOctagon, trash: Trash2, custom: Folder };
@@ -40,7 +41,7 @@ function NavItem({ icon: Icon, label, count, active, onClick, depth = 0, tone, d
   );
 }
 
-/** New global order after dropping `dragId` onto `targetId` (both in the same project). */
+/** New global order after dropping `dragId` onto `targetId` (two accounts of one project, or two projects). */
 export function moveAccount(accounts, dragId, targetId) {
   const ids = accounts.map((a) => a.id);
   const from = ids.indexOf(dragId);
@@ -51,8 +52,10 @@ export function moveAccount(accounts, dragId, targetId) {
   return ids;
 }
 
-export default function Sidebar({ t, state, view, scope, expanded, onToggle, onOpen, onView, onCompose, onAddProject, onAddAccount, onReorderAccounts, onDropMessages, update }) {
+export default function Sidebar({ t, state, view, scope, expanded, onToggle, onOpen, onView, onCompose, onAddProject, onAddAccount, onReorderAccounts, onReorderProjects, onDropMessages, update }) {
   const [dragging, setDragging] = useState(null);
+  const [draggingProject, setDraggingProject] = useState(null);
+  const [projectTarget, setProjectTarget] = useState(null);
   const [over, setOver] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const { projects, accounts, folders, counts, drafts, outbox } = state;
@@ -83,8 +86,23 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
           const projectAccounts = accounts.filter((a) => a.projectId === project.id);
           const projectOpen = expanded.has(project.id);
           return (
-            <div key={project.id} className="tree-project" style={{ '--project': project.color }}>
-              <div className={classNames('project-tab', isMail && sameScope(scope, { kind: 'project', projectId: project.id }) && 'active')}>
+            <div key={project.id} className={classNames('tree-project', draggingProject === project.id && 'dragging', projectTarget === project.id && draggingProject !== project.id && 'drop-target')} style={{ '--project': project.color }}>
+              <div
+                className={classNames('project-tab', isMail && sameScope(scope, { kind: 'project', projectId: project.id }) && 'active')}
+                draggable
+                title={t('dragToReorder')}
+                onDragStart={(e) => { setDraggingProject(project.id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', project.id); }}
+                onDragEnd={() => { setDraggingProject(null); setProjectTarget(null); }}
+                onDragOver={(e) => { if (draggingProject) { e.preventDefault(); setProjectTarget(project.id); } }}
+                onDrop={(e) => {
+                  if (!draggingProject) return;
+                  e.preventDefault();
+                  const order = moveAccount(projects, draggingProject, project.id);
+                  setDraggingProject(null);
+                  setProjectTarget(null);
+                  if (order) onReorderProjects?.(order);
+                }}
+              >
                 <button className="tab-toggle" onClick={() => onToggle(project.id)} aria-expanded={projectOpen} aria-label={project.name}><ChevronDown size={14} /></button>
                 <button className="tab-name" onClick={() => open({ kind: 'project', projectId: project.id })} dir="auto">{project.name}</button>
                 {counts.projects[project.id] ? <span className="nav-count">{counts.projects[project.id]}</span> : null}
@@ -119,7 +137,7 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
                         <div className={classNames('account-line', isMail && sameScope(scope, { kind: 'account', accountId: account.id }) && 'active')} {...dropProps(accountFolders.find((f) => f.role === 'inbox')?.id, onDropMessages, setOver, over)}>
                           <button className="tab-toggle" onClick={() => onToggle(account.id)} aria-expanded={accountOpen} aria-label={account.email}><ChevronDown size={13} /></button>
                           <button className="account-name" onClick={() => open({ kind: 'account', accountId: account.id })} title={account.sync?.error || account.email}>
-                            <span className={classNames('status-dot', `s-${status}`)} />
+                            <span className="avatar-status"><AccountAvatar account={account} size={20} /><span className={classNames('status-dot', `s-${status}`)} /></span>
                             <span dir="auto">{account.displayName || account.email}</span>
                           </button>
                           {counts.accounts[account.id] ? <span className="nav-count">{counts.accounts[account.id]}</span> : null}
