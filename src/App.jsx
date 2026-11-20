@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, Archive, ArrowLeft, Bell, Check, Copy, CornerUpLeft, Flag, FolderInput, Forward, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, ReplyAll,
+  AlarmClock, AlertTriangle, Archive, ArrowLeft, Bell, BellRing, Check, Copy, CornerUpLeft, Flag, FolderInput, Forward, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, ReplyAll,
   ShieldAlert, ShieldCheck, Tag, Trash2, Users,
 } from 'lucide-react';
 import logoUrl from './assets/logo.png';
@@ -17,8 +17,9 @@ import ThreadView, { buildReply } from './components/ThreadView';
 import Composer from './components/Composer';
 import AccountSetup from './components/AccountSetup';
 import SettingsView from './components/SettingsView';
-import { ActivityPage, DraftsPage, OutboxPage } from './components/Pages';
-import { classNames } from './lib/format';
+import { ActivityPage, DraftsPage, OutboxPage, RemindersPage } from './components/Pages';
+import WhenPicker from './components/WhenPicker';
+import { classNames, formatWhen } from './lib/format';
 
 const api = window.emargy;
 const PAGE = 150;
@@ -93,6 +94,7 @@ export default function App() {
   const [sceneImage, setSceneImage] = useState(null);
   const [sceneVersion, setSceneVersion] = useState(0);
   const [toast, setToast] = useState(null);
+  const [snoozing, setSnoozing] = useState(null); // { id, subject } of the conversation to snooze
   const [syncing, setSyncing] = useState(false);
   const [category, setCategory] = useState('primary');
   const [menu, setMenu] = useState(null);
@@ -202,8 +204,9 @@ export default function App() {
       setScope({ kind: 'unified', role: 'important' });
       openThreadRef.current?.({ id });
     });
+    const offView = api.onOpenView((next) => { if (next === 'reminders') setView('reminders'); });
     api.updateStatus().then(setUpdate).catch(() => {});
-    return () => { offStatus(); offMail(); offOutbox(); offUpdate(); offOpen(); offScope(); };
+    return () => { offStatus(); offMail(); offOutbox(); offUpdate(); offOpen(); offScope(); offView(); };
   }, [refreshList, refreshState]);
 
   useEffect(() => {
@@ -418,6 +421,8 @@ export default function App() {
       !many && { separator: true },
       { label: unread ? t('markRead') : t('markUnread'), icon: unread ? MailOpen : Mail, onClick: act(unread ? 'read' : 'unread') },
       { label: flagged ? t('unflag') : t('flag'), icon: Flag, onClick: act(flagged ? 'unflag' : 'flag') },
+      !many && message.folderRole === 'inbox' && { label: t('snoozeEllipsis'), icon: AlarmClock, hint: 'B', onClick: () => setSnoozing({ id: message.id, threadKey: message.threadKey }) },
+      !many && message.folderRole === 'sent' && { label: t('remindIfNoReply'), icon: BellRing, onClick: () => remindIfNoReply(message.id, 3) },
       { separator: true },
       { label: t('moveToEllipsis'), icon: FolderInput, onClick: () => setPicker({ x: menu?.x ?? 0, y: menu?.y ?? 0, rows }) },
       tabbed && !many && { heading: t('moveToTab') },
@@ -456,9 +461,40 @@ export default function App() {
     if (draft) { setView('mail'); setThread(null); setSelectedId(null); setComposer({ key: Date.now(), inline: false, initial: { ...draft, mode: draft.inReplyTo ? 'reply' : 'new' } }); }
   };
 
+  const snoozeUntil = async (until) => {
+    const target = snoozing;
+    setSnoozing(null);
+    const next = await guard(() => api.snooze({ messageId: target.id, until }));
+    if (!next) return;
+    setState(next);
+    if (thread?.messages?.some((m) => m.id === target.id || m.threadKey === target.threadKey)) { setThread(null); setSelectedId(null); }
+    setSelection(new Set());
+    refreshList();
+    showToast(t('snoozedUntil', { when: formatWhen(until, language) }));
+  };
+  const remindIfNoReply = async (messageId, days) => {
+    const next = await guard(() => api.remindIfNoReply({ messageId, days }));
+    if (next) { setState(next); showToast(t('reminderSet', { n: days })); }
+  };
+
+  const reopenDraft = (draft) => {
+    setView('mail');
+    setComposer({ key: Date.now(), inline: false, initial: { ...draft, mode: draft.inReplyTo ? 'reply' : 'new' } });
+  };
+  const editScheduled = async (outboxId) => {
+    const undone = await guard(() => api.undoSend(outboxId));
+    if (undone) { setState(undone.state); reopenDraft(undone.draft); }
+  };
+
   const onSent = (result) => {
     setComposer(null);
     setState(result.state);
+    if (result.scheduled) {
+      return showToast(t('scheduledFor', { when: formatWhen(result.sendAt, language) }), 'success', {
+        actionLabel: t('cancel'),
+        onAction: () => editScheduled(result.outboxId),
+      });
+    }
     const waiting = result.sendAt > Date.now() + 500;
     if (!waiting) return showToast(t('sent'));
     return showToast(t('sending'), 'info', {
@@ -496,6 +532,7 @@ export default function App() {
         Delete: () => last && threadAction('trash', ids),
         s: () => last && threadAction(thread.messages.some((m) => m.flagged) ? 'unflag' : 'flag', ids),
         u: () => last && threadAction('unread', ids),
+        b: () => last && thread.messages.some((m) => m.folderRole === 'inbox') && setSnoozing({ id: last.id, threadKey: last.threadKey }),
         Escape: () => { setSelection(new Set()); setMenu(null); },
       };
       if (event.key === 'Escape' && view !== 'mail' && !addingTo && !document.querySelector('.modal')) { event.preventDefault(); setView('mail'); return; }
@@ -531,6 +568,7 @@ export default function App() {
     <Composer
       key={composer.key}
       t={t}
+      language={language}
       accounts={state.accounts}
       signatures={state.signatures}
       settings={state.settings}
@@ -625,6 +663,8 @@ export default function App() {
                 folders={state.folders}
                 state={state}
                 onAction={threadAction}
+                onSnooze={(message) => setSnoozing({ id: message.id, threadKey: message.threadKey })}
+                onRemind={remindIfNoReply}
                 onReply={reply}
                 onToast={showToast}
                 onTrustSender={async (address) => {
@@ -653,7 +693,17 @@ export default function App() {
         <div className="page-shell">
           <button className="back-button" onClick={() => setView('mail')} title="Esc"><ArrowLeft size={16} className="flip-rtl" />{t('backToMail')}</button>
           {view === 'drafts' && <DraftsPage t={t} language={language} state={state} setState={setState} onOpenDraft={openDraft} />}
-          {view === 'outbox' && <OutboxPage t={t} language={language} state={state} setState={setState} onToast={showToast} />}
+          {view === 'outbox' && <OutboxPage t={t} language={language} state={state} setState={setState} onToast={showToast} onEdit={editScheduled} />}
+          {view === 'reminders' && (
+            <RemindersPage
+              t={t}
+              language={language}
+              state={state}
+              setState={setState}
+              onToast={showToast}
+              onOpen={(id) => { setView('mail'); openThreadRef.current?.({ id }); }}
+            />
+          )}
           {view === 'activity' && <ActivityPage t={t} language={language} state={state} />}
           {view.startsWith('settings') && <SettingsView key={view} t={t} state={state} setState={setState} language={language} onToast={showToast} onView={setView} onAddAccount={setAddingTo} onSceneChanged={() => setSceneVersion((n) => n + 1)} initialTab={view.split('-')[1] || 'general'} />}
         </div>
@@ -666,6 +716,7 @@ export default function App() {
         </Modal>
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={rowMenuItems(menu.message)} onClose={() => setMenu(null)} />}
+      {snoozing && <WhenPicker t={t} language={language} title={t('snoozeTitle')} hint={t('snoozeHint')} confirmLabel={t('snooze')} onPick={snoozeUntil} onClose={() => setSnoozing(null)} />}
       {picker && (
         <FolderPicker
           x={picker.x}

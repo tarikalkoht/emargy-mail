@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, LoaderCircle, Paperclip, Send, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
+import { BellRing, CalendarClock, ChevronDown, LoaderCircle, Paperclip, Send, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
 import RichEditor, { setSignature } from './RichEditor';
 import RecipientInput from './RecipientInput';
 import Modal from './Modal';
-import { classNames, formatSize, paragraphsToHtml, parseAddresses } from '../lib/format';
+import WhenPicker from './WhenPicker';
+import { classNames, formatFullDate, formatSize, formatWhen, paragraphsToHtml, parseAddresses, quickTimes } from '../lib/format';
+
+const FOLLOW_UP_CHOICES = [0, 1, 3, 5, 7, 14];
 
 const api = window.emargy;
 const errorText = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -13,7 +16,7 @@ function signatureFor(account, signatures, mode) {
   return signatures.find((s) => s.id === id) || null;
 }
 
-export default function Composer({ t, accounts, signatures, settings, initial, inline = false, onClose, onSent, onToast }) {
+export default function Composer({ t, language, accounts, signatures, settings, initial, inline = false, onClose, onSent, onToast }) {
   const mode = initial?.mode || 'new';
   const [fields, setFields] = useState(() => ({
     accountId: initial?.accountId || accounts[0]?.id || '',
@@ -30,6 +33,11 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
   const [sigMenu, setSigMenu] = useState(false);
   const [aiMenu, setAiMenu] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [laterMenu, setLaterMenu] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [pendingAt, setPendingAt] = useState(null);
+  const [remindMenu, setRemindMenu] = useState(false);
+  const [followUpDays, setFollowUpDays] = useState(0);
   const editorRef = useRef(null);
   const dirty = useRef(false);
   const saveTimer = useRef(null);
@@ -151,13 +159,16 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
   };
 
   const recipients = parseAddresses([fields.to, fields.cc, fields.bcc].join(','));
-  const send = async () => {
+  /** at: a time to send it later, or nothing to send now (after the undo window). */
+  const send = async (at = null) => {
+    setLaterMenu(false);
+    setPicking(false);
     if (!recipients.length) return onToast(t('addRecipient'), 'error');
-    if (settings.confirmBeforeSend && !confirming) return setConfirming(true);
+    if (settings.confirmBeforeSend && !confirming) { setPendingAt(at); return setConfirming(true); }
     clearTimeout(saveTimer.current);
     setSending(true);
     try {
-      const result = await api.send(snapshot());
+      const result = await api.send({ ...snapshot(), sendAt: at || undefined, followUpDays: followUpDays || undefined });
       dirty.current = false; // sent: closing must not re-create the draft
       onSent(result);
     } catch (error) {
@@ -184,6 +195,7 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
 
   const onKeyDown = (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); send(); }
+    if (event.key === 'Escape' && (laterMenu || remindMenu)) { event.preventDefault(); setLaterMenu(false); setRemindMenu(false); return; }
     if (event.key === 'Escape' && !confirming) { event.preventDefault(); close(); }
   };
 
@@ -235,9 +247,36 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
         </div>
       )}
       <footer className="composer-foot">
-        <button className="button primary" onClick={send} disabled={sending || !fields.accountId}>
-          {sending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}{t('send')}
-        </button>
+        <span className="send-split tool-menu">
+          <button className="button primary" onClick={() => send()} disabled={sending || !fields.accountId}>
+            {sending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}{t('send')}
+          </button>
+          <button className="button primary send-more" onClick={() => { setRemindMenu(false); setLaterMenu(!laterMenu); }} disabled={sending || !fields.accountId} title={t('sendLater')} aria-label={t('sendLater')} aria-expanded={laterMenu}>
+            <ChevronDown size={15} />
+          </button>
+          {laterMenu && (
+            <div className="menu up">
+              <span className="menu-note">{t('sendLater')}</span>
+              {quickTimes(language).map((option) => (
+                <button key={option.key} onClick={() => send(option.at)}>{t(`when_${option.key}`)} · {formatWhen(option.at, language)}</button>
+              ))}
+              <button onClick={() => { setLaterMenu(false); setPicking(true); }}><CalendarClock size={14} /> {t('whenPick')}</button>
+            </div>
+          )}
+        </span>
+        <span className="tool-menu">
+          <button className={classNames('button ghost remind-chip', followUpDays && 'on')} onClick={() => { setLaterMenu(false); setRemindMenu(!remindMenu); }} title={t('remindIfNoReply')} aria-expanded={remindMenu}>
+            <BellRing size={16} />{followUpDays ? t('remindAfter', { n: followUpDays }) : t('remindMe')}
+          </button>
+          {remindMenu && (
+            <div className="menu up">
+              <span className="menu-note">{t('remindIfNoReply')}</span>
+              {FOLLOW_UP_CHOICES.map((n) => (
+                <button key={n} className={classNames(n === followUpDays && 'checked')} onClick={() => { setFollowUpDays(n); setRemindMenu(false); }}>{n ? t('afterDays', { n }) : t('noReminder')}</button>
+              ))}
+            </div>
+          )}
+        </span>
         <button className="button ghost" onClick={addFiles}><Paperclip size={16} />{t('attach')}</button>
         <span className="tool-menu">
           <button className="button ghost" onClick={() => setSigMenu(!sigMenu)}>{signatures.find((s) => s.id === signatureId)?.name || t('noSignature')}<ChevronDown size={14} /></button>
@@ -274,13 +313,18 @@ export default function Composer({ t, accounts, signatures, settings, initial, i
               <dt>{t('to')}</dt><dd dir="auto">{[fields.to, fields.cc, fields.bcc].filter(Boolean).join(', ')}</dd>
               <dt>{t('subject')}</dt><dd dir="auto">{fields.subject || t('noSubject')}</dd>
               {!!attachments.length && <><dt>{t('attachments')}</dt><dd>{attachments.length}</dd></>}
+              {pendingAt && <><dt>{t('sendAtLabel')}</dt><dd>{formatFullDate(pendingAt, language)}</dd></>}
+              {!!followUpDays && <><dt>{t('remindMe')}</dt><dd>{t('afterDays', { n: followUpDays })}</dd></>}
             </dl>
             <div className="modal-actions">
               <button className="button ghost" onClick={() => setConfirming(false)}>{t('keepEditing')}</button>
-              <button className="button primary" autoFocus onClick={send} disabled={sending}>{sending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}{t('send')}</button>
+              <button className="button primary" autoFocus onClick={() => send(pendingAt)} disabled={sending}>{sending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}{pendingAt ? t('schedule') : t('send')}</button>
             </div>
           </div>
         </Modal>
+      )}
+      {picking && (
+        <WhenPicker t={t} language={language} title={t('sendLater')} confirmLabel={t('schedule')} onPick={(at) => send(at)} onClose={() => setPicking(false)} />
       )}
     </section>
   );

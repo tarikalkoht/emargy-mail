@@ -89,6 +89,10 @@ async function buildRawMessage(account, payload) {
     inReplyTo: payload.inReplyTo || undefined,
     references: payload.references || undefined,
     attachments: files,
+    // A scheduled message is dated when it is due to go, not when it was written.
+    date: payload.date instanceof Date ? payload.date : undefined,
+    // Kept when a scheduled message is rebuilt at send time, so replies still thread to it.
+    messageId: payload.messageId || undefined,
   });
   const compiled = mail.compile();
   compiled.keepBcc = false;

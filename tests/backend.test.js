@@ -12,6 +12,7 @@ const { SyncManager } = require('../electron/sync.cjs');
 const { Outbox } = require('../electron/outbox.cjs');
 const { createApi } = require('../electron/api.cjs');
 const { migrateLegacyStore } = require('../electron/migrate.cjs');
+const { ReminderWatcher, DAY } = require('../electron/reminders.cjs');
 const { startMailServers, rawMessage } = require('./helpers/mailServers.cjs');
 
 // Stand-in for Windows DPAPI: reversible, but proves the key file never holds the raw key.
@@ -215,6 +216,84 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     expect(api.state().drafts).toHaveLength(0);
   });
 
+  it('holds a scheduled message until its time, and can send it right away', async () => {
+    const account = api.state().accounts[0];
+    const before = servers.delivered.length;
+    await expect(api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Too early', body: 'x', sendAt: Date.now() - 1000 })).rejects.toThrow(/future/);
+    const sendAt = Date.now() + 60 * 60_000;
+    const result = await api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Scheduled hello', body: 'Later', sendAt });
+    expect(result.scheduled).toBe(true);
+    expect(result.sendAt).toBe(sendAt);
+    const item = db.listOutbox().find((entry) => entry.id === result.outboxId);
+    expect(item).toMatchObject({ status: 'queued', nextAttemptAt: sendAt, attempts: 0, scheduled: true });
+    await outbox.process();
+    expect(servers.delivered.length).toBe(before); // not yet
+    expect(db.listAudit().some((entry) => entry.action === 'message.scheduled')).toBe(true);
+    await api.sendNow(result.outboxId);
+    expect(servers.delivered.length).toBe(before + 1);
+    const sent = servers.delivered.at(-1).parsed;
+    expect(sent.subject).toBe('Scheduled hello');
+    expect(sent.messageId).toBe(item.messageId);
+    expect(Math.abs(sent.date.getTime() - Date.now())).toBeLessThan(60_000); // dated when it went, not when it was planned
+  });
+
+  it('cancels a scheduled message back into a draft, with its reminder', async () => {
+    const account = api.state().accounts[0];
+    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'Changed my mind', body: 'x', sendAt: Date.now() + DAY, followUpDays: 3 });
+    expect(api.state().reminders.some((r) => r.outboxId === outboxId)).toBe(true);
+    const { draft, state } = api.cancelSend(outboxId);
+    expect(draft.subject).toBe('Changed my mind');
+    expect(state.reminders.some((r) => r.outboxId === outboxId)).toBe(false);
+    api.deleteDraft(draft.id);
+  });
+
+  it('reminds when nobody replies in time, and stops once someone does', async () => {
+    const account = api.state().accounts[0];
+    const notes = [];
+    const watcher = new ReminderWatcher({ db, sync, emit: () => {}, notify: (note) => notes.push(note) });
+    await expect(api.approveAndSend({ accountId: account.id, to: 'partner@acme.test', subject: 'x', body: 'x', followUpDays: 4 })).rejects.toThrow(/remind/);
+    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'Partner <partner@acme.test>', subject: 'Price offer', body: 'Here it is', followUpDays: 3 });
+    const sent = servers.delivered.at(-1).parsed;
+    const reminder = () => api.state().reminders.find((r) => r.outboxId === outboxId);
+    expect(reminder()).toMatchObject({ kind: 'followup', status: 'waiting', days: 3, subject: 'Price offer' });
+    expect(reminder().dueAt - Date.now()).toBeGreaterThan(3 * DAY - 60_000);
+
+    expect(watcher.check(Date.now() + DAY)).toBe(0); // too early
+    watcher.check(Date.now() + 3 * DAY + 60_000);
+    expect(reminder().status).toBe('due');
+    expect(notes).toEqual([expect.objectContaining({ kind: 'followup', subject: 'Price offer', to: 'Partner <partner@acme.test>', days: 3 })]);
+
+    // The reminder points at the same conversation as the copy in Sent.
+    await api.syncAccount(account.id);
+    await waitFor(() => api.listMessages({ folderRole: 'sent', query: 'Price offer' }).total > 0);
+    const copy = api.listMessages({ folderRole: 'sent', query: 'Price offer' }).messages[0];
+    expect(db.listReminders().find((r) => r.outboxId === outboxId).threadKey).toBe(copy.threadKey);
+
+    // The partner answers (threaded to our message): the reminder is done.
+    const client = new ImapFlow({ host: '127.0.0.1', port: servers.imapPort, secure: false, auth: { user: servers.user, pass: servers.password }, logger: false });
+    await client.connect();
+    await client.append('INBOX', ['From: Partner <partner@acme.test>', `To: ${servers.user}`, 'Subject: Re: Price offer', 'Message-ID: <answer-1@acme.test>',
+      `In-Reply-To: ${sent.messageId}`, `References: ${sent.messageId}`, `Date: ${new Date().toUTCString()}`, '', 'Looks good'].join('\r\n'));
+    await client.logout();
+    await api.syncAccount(account.id);
+    expect(watcher.check(Date.now() + 3 * DAY + 120_000)).toBe(1);
+    expect(reminder()).toBeUndefined();
+    expect(notes).toHaveLength(1);
+  });
+
+  it('notices a reply that lost the thread headers, by its sender and subject', async () => {
+    const account = api.state().accounts[0];
+    const watcher = new ReminderWatcher({ db, sync });
+    const { outboxId } = await api.approveAndSend({ accountId: account.id, to: 'buyer@acme.test', subject: 'عرض السعر', body: 'x', followUpDays: 1 });
+    const client = new ImapFlow({ host: '127.0.0.1', port: servers.imapPort, secure: false, auth: { user: servers.user, pass: servers.password }, logger: false });
+    await client.connect();
+    await client.append('INBOX', rawMessage({ from: 'Buyer <buyer@acme.test>', to: servers.user, subject: 'رد: عرض السعر', body: 'تمام', id: 'answer-2' }));
+    await client.logout();
+    await api.syncAccount(account.id);
+    watcher.check(Date.now() + 2 * DAY);
+    expect(api.state().reminders.some((r) => r.outboxId === outboxId)).toBe(false);
+  });
+
   it('keeps a message in the outbox and schedules a retry when sending fails', async () => {
     const account = api.state().accounts[0];
     const smtpPort = servers.smtpPort;
@@ -276,6 +355,38 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     api.trustImages('client@acme.test');
     expect(db.isTrustedImageSender('CLIENT@acme.test')).toBe(true);
     expect(db.isTrustedImageSender('other@acme.test')).toBe(false);
+  });
+
+  it('snoozes a conversation out of the inbox and brings it back unread, on top', async () => {
+    const notes = [];
+    const watcher = new ReminderWatcher({ db, sync, notify: (note) => notes.push(note) });
+    const inbox = () => api.listMessages({ folderRole: 'inbox' }).messages;
+    const target = inbox().at(-1); // the oldest conversation in the inbox
+    expect(target).toBeTruthy();
+    if (!target.read) await api.setRead([target.id], true);
+    expect(() => api.snooze(target.id, Date.now() - 1)).toThrow(/future/);
+    const state = api.snooze(target.id, Date.now() + 2 * 60 * 60_000);
+    expect(state.reminders.find((r) => r.kind === 'snooze')).toMatchObject({ status: 'waiting', subject: target.subject });
+    expect(inbox().some((m) => m.id === target.id)).toBe(false);
+    expect(api.listMessages({ query: target.subject.split(' ')[0] }).messages.some((m) => m.threadKey === target.threadKey)).toBe(true); // search still finds it
+
+    watcher.check(Date.now() + 3 * 60 * 60_000);
+    expect(notes).toEqual([expect.objectContaining({ kind: 'snooze', subject: target.subject, messageId: expect.any(String) })]);
+    expect(inbox()[0].threadKey).toBe(target.threadKey); // back on top
+    expect(inbox()[0].threadUnread).toBe(true);
+    expect(api.state().reminders.some((r) => r.kind === 'snooze')).toBe(false);
+    await api.openThread(inbox()[0].id); // opening it ends its place on top
+    expect(db.bumped.size).toBe(0);
+  });
+
+  it('can add a reply reminder to mail already sent, then dismiss it', () => {
+    const sent = api.listMessages({ folderRole: 'sent' }).messages[0];
+    const state = api.remindIfNoReply(sent.id, 5);
+    const reminder = state.reminders.find((r) => r.kind === 'followup' && r.days === 5);
+    expect(reminder.openId).toBeTruthy();
+    expect(() => api.remindIfNoReply(sent.id, 4)).toThrow(/remind/);
+    expect(api.postponeReminder(reminder.id, Date.now() + 2 * DAY).reminders.find((r) => r.id === reminder.id).status).toBe('waiting');
+    expect(api.dismissReminder(reminder.id).reminders.some((r) => r.id === reminder.id)).toBe(false);
   });
 
   it('goes back to watching the inbox after working in another folder', async () => {

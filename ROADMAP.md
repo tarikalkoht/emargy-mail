@@ -33,26 +33,22 @@
 - Signed Windows installer and automatic updates.
 - macOS and Linux releases.
 
-## Next up (owner's notes, November 2026)
+## Done in 0.12.0 (owner's notes, November 2026)
 
-Done in 0.12.0: account pictures, project order (arrows in Settings, drag in the side list),
-a smaller install, a body-cache retention period with "Free up space", the inbox kept under
-IMAP IDLE after work in other folders, and Arabic-aware search.
-
-Planned, in this order:
-
-1. **Follow-up reminders.** When sending, choose "remind me if nobody replies in N days"
-   (1, 3, 5, 7 days or a date). The reminder is cancelled by any message in the same thread
-   from someone else; otherwise the conversation comes back to the top of the inbox with a
-   "no reply yet" label and a notification. Stored locally per thread key.
-2. **Send later.** A date/time picker next to Send. The outbox already has
-   `next_attempt_at`, so a scheduled message is a queued item whose first attempt is in
-   the future; it can be edited or cancelled from the Outbox page until it goes.
-3. **Snooze.** Hide a conversation until a chosen time, then return it to the inbox as
-   unread with a notification. Local only at first (no server folder needed).
-4. **Ready-made indexes for large mailboxes.** Keep in-memory buckets by project, account,
-   folder and sender, updated as headers change, so opening a view stops scanning every
-   header. Worth doing before mailboxes reach 50–100k messages; measure first.
+- Account pictures; project order (arrows in Settings, drag in the side list).
+- Smaller install; full messages kept 90 days by default, with "Free up space".
+- The inbox stays under IMAP IDLE after work in other folders; Arabic-aware search.
+- **Send later**: arrow next to Send; scheduled mail waits in the Outbox (send now, edit,
+  cancel) and is dated when it actually goes.
+- **Follow-up reminders**: "Remind me" when sending, or on a sent conversation. Cancelled
+  by any reply (same thread, or same subject from a recipient); otherwise a notification
+  and an entry in the new Reminders page.
+- **Snooze** (B, the clock button or right-click): the conversation leaves the inbox and
+  comes back unread, on top, with a notification.
+- **Large mailboxes**: measured with `node scripts/bench-mailbox.cjs 100000`. Opening
+  "All inboxes" went from 77 ms to 32 ms by building full rows only for the visible page;
+  other views take 3-15 ms. Per-folder indexes were tried and dropped: they made every
+  re-sort three times slower for no visible gain. Measure again past 250k messages.
 
 ## Phase 4: Optional cloud and mobile
 

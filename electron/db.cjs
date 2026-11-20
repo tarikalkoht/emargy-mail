@@ -65,6 +65,17 @@ CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, at INTEGER NOT NULL, acti
 CREATE TABLE IF NOT EXISTS trusted_image_senders (fingerprint TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sender_rules (fingerprint TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '', verdict TEXT NOT NULL DEFAULT '');
+-- Follow-up reminders (no reply after N days) and snoozed conversations.
+CREATE TABLE IF NOT EXISTS reminders (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  thread_key TEXT NOT NULL,
+  due_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'waiting',
+  created_at INTEGER NOT NULL,
+  data BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS remote_gone (account_id TEXT NOT NULL, remote_id TEXT NOT NULL, PRIMARY KEY (account_id, remote_id));
 `;
 
@@ -86,6 +97,17 @@ function normalizeSearch(value = '') {
     .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** A subject without its "Re:" / "Fwd:" / "رد:" prefixes, folded for comparison. */
+function replySubject(subject = '') {
+  let text = String(subject || '');
+  for (let i = 0; i < 5; i += 1) {
+    const next = text.replace(/^\s*(re|fw|fwd|aw|wg|sv|vs|رد|ر|إعادة توجيه|اعادة توجيه|توجيه)\s*(\[\d+\])?\s*[:：]\s*/i, '');
+    if (next === text) break;
+    text = next;
+  }
+  return normalizeSearch(text);
 }
 
 /** Every word of the query must appear somewhere (in any order). */
@@ -145,6 +167,7 @@ class Database {
     this.upgradeSchema();
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     this.loadHeaderCache();
+    this.loadReminderCache();
   }
 
   upgradeSchema() {
@@ -297,8 +320,10 @@ class Database {
       this.db.prepare('DELETE FROM folders WHERE account_id = ?').run(id);
       this.db.prepare('DELETE FROM drafts WHERE account_id = ?').run(id);
       this.db.prepare('DELETE FROM outbox WHERE account_id = ?').run(id);
+      this.db.prepare('DELETE FROM reminders WHERE account_id = ?').run(id);
       this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
     });
+    this.loadReminderCache();
     for (const [key, header] of this.headers) if (header.accountId === id) this.headers.delete(key);
     this.sortHeaders();
   }
@@ -706,6 +731,109 @@ class Database {
     return this.sorted.filter((m) => m.accountId === accountId && !m.cached && m.size < 5 * 1024 * 1024 && m.dateValue >= since).slice(0, limit);
   }
 
+  // Reminders and snooze -----------------------------------------------------------
+  /** The thread key a message will have once it is synced (same rule as cacheHeader). */
+  threadKeyFor(header, id = '') {
+    return this.vault.fingerprint(threadRoot(header, id));
+  }
+
+  addReminder({ kind, accountId, threadKey, dueAt, data = {} }) {
+    const id = this.id();
+    this.db.prepare('INSERT INTO reminders (id, kind, account_id, thread_key, due_at, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, kind, accountId, threadKey, dueAt, 'waiting', Date.now(), this.vault.encryptJson(data));
+    this.loadReminderCache();
+    return id;
+  }
+
+  listReminders() {
+    return this.db.prepare('SELECT * FROM reminders ORDER BY due_at').all().map((row) => ({
+      id: row.id, kind: row.kind, accountId: row.account_id, threadKey: row.thread_key, dueAt: row.due_at,
+      status: row.status, createdAt: row.created_at, ...this.vault.decryptJson(row.data),
+    }));
+  }
+
+  getReminder(id) {
+    const reminder = this.listReminders().find((r) => r.id === id);
+    if (!reminder) throw new Error('Reminder not found.');
+    return reminder;
+  }
+
+  updateReminder(id, { status, dueAt, data }) {
+    const current = this.getReminder(id);
+    const { id: _id, kind, accountId, threadKey, dueAt: _due, status: _status, createdAt, ...stored } = current;
+    this.db.prepare('UPDATE reminders SET status = ?, due_at = ?, data = ? WHERE id = ?')
+      .run(status ?? current.status, dueAt ?? current.dueAt, this.vault.encryptJson({ ...stored, ...(data || {}) }), id);
+    this.loadReminderCache();
+  }
+
+  removeReminder(id) {
+    this.db.prepare('DELETE FROM reminders WHERE id = ?').run(id);
+    this.loadReminderCache();
+  }
+
+  /**
+   * In memory: conversations hidden by snooze, and those just back from snooze, which
+   * sort to the top of the inbox (by the time they came back) until they are opened.
+   */
+  loadReminderCache() {
+    this.snoozed = new Set();
+    this.bumped = new Map();
+    for (const row of this.db.prepare("SELECT account_id, thread_key, status, due_at FROM reminders WHERE kind = 'snooze' AND status IN ('waiting', 'returned')").all()) {
+      const key = `${row.account_id}:${row.thread_key}`;
+      if (row.status === 'waiting') this.snoozed.add(key);
+      else this.bumped.set(key, Math.max(this.bumped.get(key) || 0, row.due_at));
+    }
+  }
+
+  isSnoozed(message) {
+    return this.snoozed.size > 0 && this.snoozed.has(`${message.accountId}:${message.threadKey}`);
+  }
+
+  /**
+   * Which follow-ups got an answer: a message from someone else, after the reader's mail, in
+   * the same conversation, or from one of its recipients with the same subject (some
+   * senders and services break the thread headers). One pass over the headers.
+   * watch: [{ id, threadKey, since, recipients: Set<address>, subject }]
+   */
+  repliedReminders(watch, ownAddresses) {
+    const replied = new Set();
+    if (!watch.length) return replied;
+    const byKey = new Map();
+    const bySubject = new Map();
+    for (const item of watch) {
+      if (!byKey.has(item.threadKey)) byKey.set(item.threadKey, []);
+      byKey.get(item.threadKey).push(item);
+      if (item.subject) {
+        if (!bySubject.has(item.subject)) bySubject.set(item.subject, []);
+        bySubject.get(item.subject).push(item);
+      }
+    }
+    for (const m of this.sorted) {
+      if (['sent', 'drafts', 'trash', 'junk'].includes(m.folderRole) || !m.fromAddress) continue;
+      const from = String(m.fromAddress).toLowerCase();
+      if (ownAddresses.has(from)) continue;
+      for (const item of byKey.get(m.threadKey) || []) if (m.dateValue > item.since - 60_000) replied.add(item.id);
+      const subject = bySubject.size ? replySubject(m.subject) : '';
+      for (const item of (subject && bySubject.get(subject)) || []) {
+        if (m.dateValue > item.since - 60_000 && item.recipients.has(from)) replied.add(item.id);
+      }
+    }
+    return replied;
+  }
+
+  /** Opening a conversation that came back from snooze ends its place at the top. */
+  clearReturned(accountId, threadKey) {
+    const result = this.db.prepare("DELETE FROM reminders WHERE kind = 'snooze' AND status = 'returned' AND account_id = ? AND thread_key = ?").run(accountId, threadKey);
+    if (result.changes) this.loadReminderCache();
+    return result.changes > 0;
+  }
+
+  /** The newest message of a conversation, to open it from a reminder. */
+  latestInThread(accountId, threadKey) {
+    return this.sorted.find((m) => m.accountId === accountId && m.threadKey === threadKey && !['trash', 'junk'].includes(m.folderRole))
+      || this.sorted.find((m) => m.threadKey === threadKey && !['trash', 'junk'].includes(m.folderRole)) || null;
+  }
+
   // Storage ----------------------------------------------------------------------
   /** Oldest date whose full message is kept on this device (0 = keep everything). */
   bodyCutoff(now = Date.now()) {
@@ -774,7 +902,10 @@ class Database {
     const folderIsInbox = folderId ? this.getFolder(folderId)?.role === 'inbox' : folderRole === 'inbox';
     const tabbed = Boolean(folderIsInbox && !needle && CATEGORIES.includes(category));
     const tabs = tabbed ? Object.fromEntries(CATEGORIES.map((c) => [c, { unread: 0, total: 0 }])) : null;
+    // Snoozed conversations leave the inbox until they come back; search still finds them.
+    const hideSnoozed = folderIsInbox && !needle;
     const all = this.sorted.filter((m) => {
+      if (hideSnoozed && this.isSnoozed(m)) return false;
       const anyFolder = needle || folderRole === 'any';
       if (folderId ? m.folderId !== folderId : (anyFolder ? ['trash', 'junk'].includes(m.folderRole) : m.folderRole !== folderRole)) return false;
       if (projectId !== 'all' && m.projectId !== projectId) return false;
@@ -795,6 +926,9 @@ class Database {
       }
       matches = all.filter((m) => (m.category || 'primary') === category);
     }
+    // Conversations: one entry per thread, represented by its newest message. Only light
+    // records are built here; full rows are made for the visible page alone (large
+    // mailboxes have tens of thousands of conversations).
     let items = matches;
     if (threaded) {
       const threads = new Map();
@@ -802,19 +936,29 @@ class Database {
         const key = `${message.accountId}:${message.threadKey}`;
         const thread = threads.get(key);
         const messageKey = message.messageId || message.id;
-        if (!thread) threads.set(key, { ...message, threadCount: 1, threadUnread: !message.read, threadFlagged: message.flagged, seenIds: new Set([messageKey]) });
+        if (!thread) threads.set(key, { head: message, count: 1, unread: !message.read, flagged: message.flagged, firstKey: messageKey, seen: null });
         else {
-          if (!thread.seenIds.has(messageKey)) { thread.seenIds.add(messageKey); thread.threadCount += 1; }
-          thread.threadUnread ||= !message.read;
-          thread.threadFlagged ||= message.flagged;
+          thread.seen ||= new Set([thread.firstKey]);
+          if (!thread.seen.has(messageKey)) { thread.seen.add(messageKey); thread.count += 1; }
+          thread.unread ||= !message.read;
+          thread.flagged ||= message.flagged;
         }
       }
       items = [...threads.values()];
     }
+    const head = (item) => (threaded ? item.head : item);
+    if (folderIsInbox && !needle && this.bumped.size) {
+      const at = (item) => Math.max(head(item).dateValue, this.bumped.get(`${head(item).accountId}:${head(item).threadKey}`) || 0);
+      items = [...items].sort((a, b) => at(b) - at(a));
+    }
+    const row = (item) => {
+      const { search, dateValue, autoCategory, serverTrust, ...message } = head(item);
+      return threaded ? { ...message, threadCount: item.count, threadUnread: item.unread, threadFlagged: item.flagged } : message;
+    };
     return {
       total: items.length,
       tabs,
-      messages: items.slice(offset, offset + limit).map(({ search, dateValue, seenIds, autoCategory, serverTrust, ...message }) => message),
+      messages: items.slice(offset, offset + limit).map(row),
     };
   }
 
@@ -884,7 +1028,7 @@ class Database {
     const counts = { total: 0, projects: {}, accounts: {}, important: 0 };
     for (const message of this.sorted) {
       // Spam is not counted: it should not make a mailbox look busy.
-      if (message.read || message.folderRole !== 'inbox' || message.trust === 'spam') continue;
+      if (message.read || message.folderRole !== 'inbox' || message.trust === 'spam' || this.isSnoozed(message)) continue;
       counts.total += 1;
       if (isImportantMessage(message)) counts.important += 1;
       counts.projects[message.projectId] = (counts.projects[message.projectId] || 0) + 1;
@@ -974,4 +1118,4 @@ class Database {
   }
 }
 
-module.exports = { Database, parseAddressList, normalizeSearch };
+module.exports = { Database, parseAddressList, normalizeSearch, replySubject };
