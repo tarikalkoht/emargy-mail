@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, ShieldAlert, ShieldCheck, Sparkles, Trash2,
 } from 'lucide-react';
-import { TrustBadge } from './MessageList';
+import { DeliveryBadge, TrustBadge } from './MessageList';
 import AiPanel from './AiPanel';
 import { FolderPicker } from './ContextMenu';
 import { prepareEmailHtml, sanitizeForEditor } from '../emailHtml';
@@ -58,6 +58,7 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
             <strong dir="auto">{sender?.name || sender?.address || content.from}</strong>
             {sender?.name && <span className="sender-address">{sender.address}</span>}
             <TrustBadge trust={message.trust} t={t} />
+            {message.folderRole === 'sent' && <DeliveryBadge delivery={message.delivery} t={t} />}
           </button>
           <button className="recipients-line" onClick={() => setDetails(!details)} dir="auto">
             {t('toLabel')} {parseAddresses(content.to).map((a) => a.name || a.address).join(', ') || '—'}<ChevronDown size={13} />

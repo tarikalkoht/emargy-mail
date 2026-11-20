@@ -236,12 +236,14 @@ class ResendWorker {
       hasAttachments: Array.isArray(email.attachments) && email.attachments.some((a) => a.content_disposition !== 'inline'),
       size: 0,
       trust: '',
+      delivery: kind === 'sent' ? String(email.last_event || '') : '',
     };
   }
 
   /** Walk a list endpoint newest-first until a known message, or `pages` pages. */
   async collect(path, kind, { pages, after, known }) {
     const found = [];
+    const statuses = new Map();
     let cursor = after;
     let done = false;
     for (let page = 0; page < pages; page += 1) {
@@ -251,6 +253,7 @@ class ResendWorker {
       const items = result?.data || [];
       let reachedKnown = false;
       for (const email of items) {
+        if (kind === 'sent' && email.last_event) statuses.set(`sent:${email.id}`, String(email.last_event));
         if (known.has(`${kind}:${email.id}`)) { reachedKnown = true; continue; }
         if (this.mine(email, kind)) found.push(email);
       }
@@ -258,7 +261,7 @@ class ResendWorker {
       cursor = items[items.length - 1].id;
       if (reachedKnown && !after) break;
     }
-    return { found, done, cursor };
+    return { found, done, cursor, statuses };
   }
 
   store(folder, emails, kind) {
@@ -287,6 +290,8 @@ class ResendWorker {
         if (first) this.db.setFolderOlderDone(inbox.id, received.done);
         const outgoing = await this.collect('/emails', 'sent', { pages, known });
         added = added.concat(this.store(sent, outgoing.found, 'sent'));
+        // Delivery changes after sending (delivered, bounced…): refresh it for the newest sent mail.
+        this.db.setDeliveries(this.accountId, outgoing.statuses);
         if (first) this.db.setFolderOlderDone(sent.id, outgoing.done);
       } else {
         this.db.setFolderOlderDone(inbox.id, true);

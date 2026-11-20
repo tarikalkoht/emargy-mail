@@ -138,6 +138,8 @@ class Database {
     if (!columns('messages').has('category_locked')) this.db.exec('ALTER TABLE messages ADD COLUMN category_locked INTEGER NOT NULL DEFAULT 0');
     // Accounts without IMAP (Resend) keep the provider's own id of each message.
     if (!columns('messages').has('remote_id')) this.db.exec('ALTER TABLE messages ADD COLUMN remote_id TEXT');
+    // What the provider last reported for mail you sent (Resend: delivered, bounced, suppressed…).
+    if (!columns('messages').has('delivery')) this.db.exec("ALTER TABLE messages ADD COLUMN delivery TEXT NOT NULL DEFAULT ''");
     this.db.exec('CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_key)');
     this.db.exec('CREATE INDEX IF NOT EXISTS messages_remote ON messages (account_id, remote_id)');
   }
@@ -348,7 +350,7 @@ class Database {
     this.loadSenderRules();
     this.headers = new Map();
     const rows = this.db.prepare(`SELECT m.id, m.account_id, m.project_id, m.folder_id, m.uid, m.date, m.seen, m.flagged,
-      m.important, m.has_attachments, m.size, m.header, m.thread_key, m.trust, m.ai_important, m.ai_note, m.ai_checked, m.category, m.category_locked, m.remote_id, m.raw IS NOT NULL AS cached, f.role
+      m.important, m.has_attachments, m.size, m.header, m.thread_key, m.trust, m.ai_important, m.ai_note, m.ai_checked, m.category, m.category_locked, m.remote_id, m.delivery, m.raw IS NOT NULL AS cached, f.role
       FROM messages m JOIN folders f ON f.id = m.folder_id`).all();
     for (const row of rows) this.cacheHeader(row);
     this.sortHeaders();
@@ -382,6 +384,7 @@ class Database {
     entry.autoCategory = CATEGORIES.includes(row.category) ? row.category : categorize(header);
     entry.categoryLocked = Boolean(row.category_locked);
     entry.remoteId = row.remote_id || null;
+    entry.delivery = row.delivery || '';
     this.applySenderRule(entry);
     entry.search = searchText(entry);
     this.headers.set(row.id, entry);
@@ -473,9 +476,9 @@ class Database {
     const newId = `${target.account_id}:${target.id}:${uid}`;
     this.transaction(() => {
       this.db.prepare(`INSERT INTO messages (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, raw,
-        thread_key, trust, ai_important, ai_checked, ai_note, category, category_locked, remote_id)
+        thread_key, trust, ai_important, ai_checked, ai_note, category, category_locked, remote_id, delivery)
         SELECT ?, account_id, project_id, ?, ?, date, seen, flagged, important, has_attachments, size, header, raw,
-        thread_key, trust, ai_important, ai_checked, ai_note, category, category_locked, remote_id FROM messages WHERE id = ?`).run(newId, target.id, uid, id);
+        thread_key, trust, ai_important, ai_checked, ai_note, category, category_locked, remote_id, delivery FROM messages WHERE id = ?`).run(newId, target.id, uid, id);
       this.db.prepare('DELETE FROM messages WHERE id = ?').run(id);
     });
     this.headers.delete(id);
@@ -486,6 +489,23 @@ class Database {
   }
 
   /** Remember a provider message the reader deleted for good, so the next sync does not bring it back. */
+  /** Update the delivery status of sent mail from the provider's list (remoteId -> status). */
+  setDeliveries(accountId, statuses) {
+    const update = this.db.prepare('UPDATE messages SET delivery = ? WHERE id = ?');
+    let changed = 0;
+    this.transaction(() => {
+      for (const header of this.headers.values()) {
+        if (header.accountId !== accountId || !header.remoteId) continue;
+        const status = statuses.get(header.remoteId);
+        if (!status || status === header.delivery) continue;
+        update.run(status, header.id);
+        header.delivery = status;
+        changed += 1;
+      }
+    });
+    return changed;
+  }
+
   forgetRemote(accountId, remoteId) {
     if (remoteId) this.db.prepare('INSERT OR IGNORE INTO remote_gone (account_id, remote_id) VALUES (?, ?)').run(accountId, remoteId);
   }
@@ -498,8 +518,8 @@ class Database {
   insertMessages(folder, messages) {
     if (!messages.length) return [];
     const insert = this.db.prepare(`INSERT OR IGNORE INTO messages
-      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, thread_key, trust, category, remote_id, raw)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, thread_key, trust, category, remote_id, raw, delivery)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const added = [];
     this.transaction(() => {
       for (const message of messages) {
@@ -517,9 +537,10 @@ class Database {
           category: CATEGORIES.includes(message.category) ? message.category : categorize(message),
           remote_id: message.remoteId || null,
           raw: message.raw ? this.vault.encrypt(message.raw) : null,
+          delivery: message.delivery || '',
         };
         const result = insert.run(row.id, row.account_id, row.project_id, row.folder_id, row.uid, row.date, row.seen, row.flagged,
-          row.important, row.has_attachments, row.size, row.header, row.thread_key, row.trust, row.category, row.remote_id, row.raw);
+          row.important, row.has_attachments, row.size, row.header, row.thread_key, row.trust, row.category, row.remote_id, row.raw, row.delivery);
         if (result.changes) added.push(this.cacheHeader({ ...row, cached: row.raw ? 1 : 0, role: folder.role }));
       }
     });

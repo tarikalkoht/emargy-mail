@@ -51,7 +51,7 @@ function fakeResend() {
     if (target.pathname === '/emails/s1') return json(200, { ...outgoing[0], object: 'email', html: '<p>Thanks</p>', text: 'Thanks' });
     return json(404, { statusCode: 404, name: 'not_found', message: 'Not found' });
   };
-  return { fetchImpl, sent, calls };
+  return { fetchImpl, sent, calls, outgoing };
 }
 
 describe('Resend accounts', () => {
@@ -104,6 +104,15 @@ describe('Resend accounts', () => {
     expect(sent.map((m) => m.subject)).toEqual(['Re: Project brief']);
     // A second sync adds nothing twice.
     expect(await sync.worker(account.id).syncNow()).toBe(0);
+  });
+
+  it('shows what Resend reported for sent mail, and updates it later', async () => {
+    const account = api.state().accounts[0];
+    const sentNow = () => api.listMessages({ accountId: account.id, folderRole: 'sent', threaded: false }).messages[0].delivery;
+    expect(sentNow()).toBe('delivered');
+    fake.outgoing[0].last_event = 'bounced';
+    await sync.worker(account.id).syncNow();
+    expect(sentNow()).toBe('bounced');
   });
 
   it('opens a received message from its raw download and moves it between local folders', async () => {

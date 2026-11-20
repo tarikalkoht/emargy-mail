@@ -555,6 +555,10 @@ button.page-row-main:hover { background: var(--surface-2); }
 .trust-badge.spam { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .trust-badge.suspicious { background: var(--warn-soft); color: var(--warn); }
 .trust-verified { display: inline-flex; color: var(--accent); flex: none; }
+.delivery-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; flex: none; }
+.delivery-badge.ok { background: var(--accent-soft); color: var(--accent); }
+.delivery-badge.bad { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.delivery-badge.wait { background: var(--warn-soft); color: var(--warn); }
 .row.untrusted .row-subject, .row.untrusted .row-preview, .row.untrusted .row-from { opacity: .62; }
 .row-ai { display: flex; align-items: center; gap: 5px; margin: 1px 0 2px; font-size: 12px; color: var(--accent); min-width: 0; }
 .row-ai strong { font-weight: 600; flex: none; }

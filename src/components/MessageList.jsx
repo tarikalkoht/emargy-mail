@@ -9,6 +9,14 @@ const FILTERS = ['all', 'unread', 'important', 'flagged', 'attachments', 'spam']
 export const TABS = [['primary', Inbox], ['promotions', Tag], ['social', Users], ['updates', Bell]];
 export const DRAG_TYPE = 'application/x-emargy-messages';
 
+/** What Resend reported for mail you sent through it. */
+export function DeliveryBadge({ delivery, t }) {
+  if (!delivery) return null;
+  const tone = ['delivered', 'opened', 'clicked'].includes(delivery) ? 'ok'
+    : ['bounced', 'failed', 'complained', 'suppressed', 'canceled'].includes(delivery) ? 'bad' : 'wait';
+  return <span className={`delivery-badge ${tone}`} title={t(`delivery_hint_${delivery}`, null, t('delivery_hint'))}>{t(`delivery_${delivery}`, null, delivery)}</span>;
+}
+
 export function TrustBadge({ trust, t }) {
   if (trust === 'spam') return <span className="trust-badge spam" title={t('trustSpamHint')}><ShieldAlert size={12} />{t('trustSpam')}</span>;
   if (trust === 'suspicious') return <span className="trust-badge suspicious" title={t('trustSuspiciousHint')}><ShieldAlert size={12} />{t('trustSuspicious')}</span>;
@@ -41,6 +49,7 @@ function Row({ message, project, account, showAccount, active, selected, selecti
           {unread && <span className="unread-dot" aria-hidden="true" />}
           <span className="row-from" dir="auto">{who}</span>
           <TrustBadge trust={message.trust} t={t} />
+          {message.folderRole === 'sent' && <DeliveryBadge delivery={message.delivery} t={t} />}
           {message.threadCount > 1 && <span className="row-count">{message.threadCount}</span>}
           <time>{formatListDate(message.date, language)}</time>
         </div>

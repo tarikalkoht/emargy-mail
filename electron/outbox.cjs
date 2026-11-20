@@ -68,6 +68,8 @@ class Outbox {
         await this.sync.worker(account.id).appendSent(raw).catch((error) => this.db.audit('message.sent_copy_failed', { outboxId: item.id, error: error.message }));
       }
       this.sync.worker(account.id).syncNow(['sent']).catch(() => {});
+      // Resend reports delivery a few seconds later; look again so the Sent folder shows it.
+      if (account.authType === 'resend') setTimeout(() => this.sync.worker(account.id).syncNow(['sent']).catch(() => {}), 20_000).unref?.();
       this.emit('outbox:changed', { sent: item.id });
     } catch (error) {
       const attempts = item.attempts + 1;
