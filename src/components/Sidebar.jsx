@@ -1,5 +1,5 @@
 import {
-  Activity, AlertOctagon, Archive, ChevronDown, Clock, Download, FileText, Sparkles, Flag, Folder, Inbox, Layers, PenSquare, Plus, Send, Settings, Trash2,
+  Activity, AlertOctagon, Archive, ChevronDown, Clock, FileText, Sparkles, Flag, Folder, Inbox, Layers, PenSquare, Plus, Send, Settings, Trash2,
 } from 'lucide-react';
 import { useState } from 'react';
 import { classNames } from '../lib/format';
@@ -148,20 +148,6 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
       </div>
 
       <div className="nav-footer">
-        {update?.state === 'ready' && (
-          <div className="update-banner" role="status">
-            <Download size={15} />
-            <span>{t('updateReady', { version: update.version })}</span>
-            <button className="button primary small" onClick={() => window.emargy.installUpdate()}>{t('updateRestart')}</button>
-          </div>
-        )}
-        {update?.state === 'available' && (
-          <div className="update-banner" role="status">
-            <Download size={15} />
-            <span>{t('updateAvailable', { version: update.version })}</span>
-            <button className="button ghost small" onClick={() => window.emargy.openHelp('releases')}>{t('updateDownload')}</button>
-          </div>
-        )}
         <NavItem icon={Settings} label={t('settings')} active={view.startsWith('settings')} onClick={() => onView('settings')} />
         <NavItem icon={Activity} label={t('activity')} active={view === 'activity'} onClick={() => onView('activity')} />
       </div>

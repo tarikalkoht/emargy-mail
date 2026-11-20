@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import logoUrl from './assets/logo.png';
 import TopBar from './components/TopBar';
+import UpdateBar from './components/UpdateBar';
 import { ContextMenu, FolderPicker } from './components/ContextMenu';
 import Modal from './components/Modal';
 import Logo from './components/Logo';
@@ -97,6 +98,7 @@ export default function App() {
   const [menu, setMenu] = useState(null);
   const [picker, setPicker] = useState(null);
   const [appInfo, setAppInfo] = useState(null);
+  const [updateHidden, setUpdateHidden] = useState('');
   const logoImage = useRef(null);
   const [logoReady, setLogoReady] = useState(false);
   const toastTimer = useRef(null);
@@ -213,7 +215,9 @@ export default function App() {
     image.onload = () => { logoImage.current = image; setLogoReady(true); };
     image.src = logoUrl;
     const offCompose = api.onComposeNew(() => composeRef.current?.());
-    return () => offCompose();
+    // Clicking the "new version" notification shows the banner again.
+    const offUpdate = api.onOpenUpdate(() => setUpdateHidden(''));
+    return () => { offCompose(); offUpdate(); };
   }, []);
 
   // The reader's own picture for empty screens (kept encrypted by the main process).
@@ -543,6 +547,9 @@ export default function App() {
   return (
     <div className="app-shell">
     <TopBar t={t} search={search} onSearch={(value) => { setSearch(value); if (view !== 'mail') setView('mail'); }} searchRef={searchRef} scopeLabel={scope.kind === 'unified' && scope.role === 'inbox' ? '' : title} />
+    {update && ['ready', 'available'].includes(update.state) && updateHidden !== update.version && (
+      <UpdateBar t={t} update={update} onLater={() => setUpdateHidden(update.version)} onError={(error) => showToast(errorText(error), 'error')} />
+    )}
     <div className="app">
       <Sidebar
         t={t}

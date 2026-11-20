@@ -325,6 +325,7 @@ function registerHandlers() {
       releases: 'https://github.com/tarikalkoht/emargy-mail/releases',
       resendKeys: 'https://resend.com/api-keys',
       resendReceiving: 'https://resend.com/docs/dashboard/receiving/introduction',
+      storePage: STORE_PAGE,
     };
     if (!pages[key]) throw new Error('Unknown page.');
     return shell.openExternal(pages[key]);
@@ -474,6 +475,26 @@ const CATEGORY_LABELS = {
   en: { offer: 'Offer', government: 'Government', project: 'Project', invoice: 'Invoice', legal: 'Legal', meeting: 'Meeting', other: 'Important' },
 };
 
+const STORE_PAGE = 'ms-windows-store://pdp/?productid=9P80CNCHC1QX';
+let updateNotified = '';
+
+/** One Windows notification per new version: ready to install, or (portable copy) ready to download. */
+function notifyUpdate(status) {
+  if (!['ready', 'available'].includes(status?.state) || !status.version || updateNotified === status.version) return;
+  if (!Notification.isSupported()) return;
+  updateNotified = status.version;
+  const ar = arabicUi();
+  const ready = status.state === 'ready';
+  showNotification({
+    title: ar ? `إصدار جديد من إيمارجي ميل: ${status.version}` : `Emargy Mail ${status.version} is available`,
+    body: ready
+      ? (ar ? 'التحديث نُزّل وتم التحقق من توقيعه. اضغط هنا ثم «أعد التشغيل الآن».' : 'Downloaded and signature-checked. Click here, then “Restart now”.')
+      : (ar ? 'اضغط هنا لتنزيل الإصدار الجديد.' : 'Click here to download the new version.'),
+    silent: true,
+    onClick: () => emit('open:update', status),
+  });
+}
+
 function notifyImportant(found) {
   if (!found.length || !Notification.isSupported()) return;
   const prefs = preferences();
@@ -549,7 +570,7 @@ app.whenReady().then(() => {
     portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
     // EMARGY_STORE only exists so tests can act like the Store package.
     store: Boolean(process.windowsStore) || process.env.EMARGY_STORE === '1',
-    emit: (status) => emit('update:status', status),
+    emit: (status) => { emit('update:status', status); notifyUpdate(status); },
     onQuit: () => app.quit(),
   });
   importance = new ImportanceWatcher({

@@ -47,6 +47,7 @@ function UpdateSetting({ t, enabled, onChange }) {
     return (
       <div className="setting-row">
         <span><strong>{t('version', { version: status.currentVersion || '' })}</strong><small>{t('updateFromStore')}</small></span>
+        <button className="button ghost" onClick={() => api.openHelp('storePage')}>{t('openInStore')}</button>
       </div>
     );
   }

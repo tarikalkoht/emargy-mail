@@ -319,6 +319,26 @@ async function main() {
     if (!menuLabels.labels.includes('نسخ') || menuLabels.copied !== 'نص منسوخ INV-1' || !menuLabels.labels.includes('نسخ الرابط')) throw new Error(`Text right-click menu is wrong: ${JSON.stringify(menuLabels)}`);
     step(`right-click on selected text copies it (${menuLabels.labels.join(' · ')})`);
 
+    // A verified update: Windows notification once, and a banner with "Restart now" / "Later".
+    const notified = await app.evaluate(({ BrowserWindow, Notification }) => {
+      const shown = [];
+      const original = Notification.prototype.show;
+      Notification.prototype.show = function capture() { shown.push(this.title); };
+      globalThis.__restoreNotify = () => { Notification.prototype.show = original; };
+      globalThis.__shownNotifications = shown;
+      BrowserWindow.getAllWindows()[0].webContents.send('update:status', { state: 'ready', version: '9.9.9', currentVersion: '0.0.0' });
+      return true;
+    });
+    await page.locator('.update-bar').waitFor();
+    await shot('15-update-bar');
+    await page.locator('.update-bar').getByRole('button', { name: 'لاحقاً' }).click();
+    await page.locator('.update-bar').waitFor({ state: 'detached' });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('open:update', {}));
+    await page.locator('.update-bar').waitFor();
+    await app.evaluate(() => globalThis.__restoreNotify?.());
+    if (!notified) throw new Error('Update notification check did not run.');
+    step('a new version shows a banner (Restart now / Later) that comes back from the notification');
+
     // Closing the window keeps the app running next to the clock.
     await window.evaluate((w) => w.close());
     await page.waitForTimeout(400);

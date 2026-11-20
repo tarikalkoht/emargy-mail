@@ -528,6 +528,13 @@ button.page-row-main:hover { background: var(--surface-2); }
 .provider-guide strong { color: var(--ink); font-size: 13.5px; }
 .provider-guide ol { margin: 0; padding-inline-start: 20px; display: grid; gap: 4px; line-height: 1.6; }
 .guide-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.update-bar { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 8px 8px; padding: 9px 12px 9px 14px; border-radius: 12px; background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #0c4a6e)); color: var(--accent-ink); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 25%, transparent); animation: menu-in .2s ease-out; }
+.update-bar > svg { flex: none; }
+.update-bar span { flex: 1; min-width: 220px; font-size: 13.5px; }
+.update-bar strong { font-weight: 700; }
+.update-bar .button.primary { background: var(--accent-ink); color: var(--accent); }
+.update-bar .button.ghost { border-color: color-mix(in srgb, var(--accent-ink) 45%, transparent); color: var(--accent-ink); }
+.update-bar .button.ghost:hover { background: color-mix(in srgb, var(--accent-ink) 14%, transparent); color: var(--accent-ink); }
 .update-banner { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px 8px; margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); font-size: 13px; }
 .update-banner svg { color: var(--accent); }
 .update-banner .button { grid-column: 1 / -1; justify-content: center; }

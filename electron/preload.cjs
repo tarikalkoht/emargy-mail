@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('emargy', {
   setWindowTheme: invoke('window:theme'),
   quitApp: invoke('app:quit'),
   onComposeNew: subscribe('compose:new'),
+  onOpenUpdate: subscribe('open:update'),
   trustImages: invoke('images:trust'),
   searchContacts: invoke('contacts:search'),
   forwardAttachments: invoke('attachments:forward'),
