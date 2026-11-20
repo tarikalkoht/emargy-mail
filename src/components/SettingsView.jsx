@@ -100,6 +100,7 @@ function Notifications({ t, state, setState }) {
       <Toggle label={t('notifyPreview')} hint={t('notifyPreviewHint')} checked={s.notifyPreview !== false} onChange={(v) => update({ notifyPreview: v })} />
       <Toggle label={t('notifySound')} checked={s.notifySound !== false} onChange={(v) => update({ notifySound: v })} />
       <Toggle label={t('taskbarBadge')} hint={t('taskbarBadgeHint')} checked={s.taskbarBadge !== false} onChange={(v) => update({ taskbarBadge: v })} />
+      {s.inboxTabs !== false && <Toggle label={t('notifyPrimaryOnly')} hint={t('notifyPrimaryOnlyHint')} checked={Boolean(s.notifyPrimaryOnly)} onChange={(v) => update({ notifyPrimaryOnly: v })} />}
       <div className="setting-row quiet-hours">
         <span><strong>{t('quietHours')}</strong><small>{t('quietHoursHint')}</small></span>
         <span className="quiet-controls">
@@ -178,6 +179,8 @@ function Appearance({ t, state, setState, onToast, onSceneChanged }) {
 function General({ t, state, setState, language }) {
   const s = state.settings;
   const update = async (changes) => setState(await api.updateSettings(changes));
+  const [info, setInfo] = useState(null);
+  useEffect(() => { api.appInfo().then(setInfo).catch(() => {}); }, []);
   return (
     <div className="settings-section">
       <Segmented label={t('language')} value={language} options={[['ar', 'العربية'], ['en', 'English']]} onChange={async (v) => setState(await api.setLanguage(v))} />
@@ -189,6 +192,9 @@ function General({ t, state, setState, language }) {
       </div>
       <Toggle label={t('confirmBeforeSend')} hint={t('confirmBeforeSendHint')} checked={s.confirmBeforeSend} onChange={(v) => update({ confirmBeforeSend: v })} />
       <Toggle label={t('markReadOnOpen')} checked={s.markReadOnOpen} onChange={(v) => update({ markReadOnOpen: v })} />
+      <Toggle label={t('inboxTabs')} hint={t('inboxTabsHint')} checked={s.inboxTabs !== false} onChange={(v) => update({ inboxTabs: v })} />
+      <Toggle label={t('closeToTray')} hint={t('closeToTrayHint')} checked={s.closeToTray !== false} onChange={(v) => update({ closeToTray: v })} />
+      {info && !info.store && !info.portable && <Toggle label={t('startAtLogin')} hint={t('startAtLoginHint')} checked={Boolean(s.startAtLogin)} onChange={(v) => update({ startAtLogin: v })} />}
       <AiSetting t={t} value={s.aiProvider || 'auto'} onChange={(v) => update({ aiProvider: v })} />
       <UpdateSetting t={t} enabled={s.autoUpdate !== false} onChange={(v) => update({ autoUpdate: v })} />
     </div>
@@ -197,14 +203,16 @@ function General({ t, state, setState, language }) {
 
 function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove, first, last }) {
   const [open, setOpen] = useState(defaultOpen);
-  const [form, setForm] = useState({ displayName: account.displayName || '', projectId: account.projectId, signatureNew: account.signatureNew || '', signatureReply: account.signatureReply || '', password: '' });
+  const [form, setForm] = useState({ displayName: account.displayName || '', projectId: account.projectId, signatureNew: account.signatureNew || '', signatureReply: account.signatureReply || '', password: '', allAddresses: Boolean(account.allAddresses) });
+  const resend = account.authType === 'resend';
   const [busy, setBusy] = useState(false);
   const status = account.sync?.status || 'idle';
   const project = state.projects.find((p) => p.id === account.projectId);
   const save = async () => {
     setBusy(true);
     try {
-      setState(await api.updateAccount(account.id, { ...form, password: form.password || undefined }));
+      const { allAddresses, ...changes } = form;
+      setState(await api.updateAccount(account.id, { ...changes, password: form.password || undefined, ...(resend ? { allAddresses } : {}) }));
       setForm((f) => ({ ...f, password: '' }));
       onToast(t('saved'));
     } catch (error) {
@@ -222,7 +230,7 @@ function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove
       <header>
         <button className="card-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
           <span className={classNames('status-dot', `s-${status}`)} />
-          <span className="card-title"><strong dir="auto">{account.displayName || account.email}</strong><small>{account.email} · {account.imapHost}</small></span>
+          <span className="card-title"><strong dir="auto">{account.displayName || account.email}</strong><small>{account.email} · {resend ? (account.resendMode === 'send' ? t('resendSendOnly') : 'Resend API') : account.imapHost}</small></span>
           {project && <span className="project-tag" style={{ '--project': project.color }}>{project.name}</span>}
           <ChevronDown size={16} className="card-chevron" />
         </button>
@@ -242,7 +250,8 @@ function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove
             <span>{t('microsoftAccount')}</span>
             <button type="button" className="button ghost" onClick={() => api.renewMicrosoft(account.id).then(setState).then(() => onToast(t('saved'))).catch((e) => onToast(errorText(e), 'error'))}>{t('microsoftRenew')}</button>
           </div>
-        ) : <label className="field wide"><span>{t('changePassword')}</span><input type="password" dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={t('changePasswordHint')} /></label>}
+        ) : <label className="field wide"><span>{resend ? t('changeApiKey') : t('changePassword')}</span><input type="password" dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={resend ? 're_…' : t('changePasswordHint')} /></label>}
+        {resend && <label className="check wide"><input type="checkbox" checked={form.allAddresses} onChange={(e) => setForm({ ...form, allAddresses: e.target.checked })} />{t('resendAllAddresses')}</label>}
       </div>
       <footer>
         <button className="button ghost danger-text" onClick={remove}><Trash2 size={15} />{t('deleteAccount')}</button>

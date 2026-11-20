@@ -3,6 +3,7 @@ const { imapConfig, parseRawMessage, summarizeFetched } = require('./mail.cjs');
 const { classifyTrust, trustedAuthServers } = require('./core.cjs');
 const { freshAccount } = require('./oauth.cjs');
 const { verifiedDkimDomains } = require('./dkim.cjs');
+const { categorize } = require('./categorize.cjs');
 
 const INITIAL_WINDOW = 500;
 const RECONCILE_WINDOW = 1000;
@@ -48,7 +49,11 @@ function folderRole(folder) {
   return 'custom';
 }
 
-const TRUST_HEADERS = ['references', 'x-spam-flag', 'x-spam-status', 'x-spam', 'x-ms-exchange-organization-scl', 'authentication-results'];
+const TRUST_HEADERS = ['references', 'x-spam-flag', 'x-spam-status', 'x-spam', 'x-ms-exchange-organization-scl', 'authentication-results',
+  'list-unsubscribe', 'list-id', 'precedence', 'auto-submitted'];
+/** Gmail's inbox tabs, asked from Gmail itself (X-GM-RAW). Forums are shown with Updates. */
+const GMAIL_TABS = [['social', 'social'], ['promotions', 'promotions'], ['updates', 'updates'], ['forums', 'updates']];
+const GMAIL_TAB_WINDOW = 2000;
 
 function parseReferences(headers) {
   if (!headers) return '';
@@ -193,7 +198,7 @@ class AccountWorker {
       this.manager.emit('mail:changed', {
         accountId: this.accountId,
         newInbox: wasInitial ? [] : added.filter((m) => m.folderRole === 'inbox' && !m.read).map((m) => ({
-          id: m.id, projectId: m.projectId, accountId: m.accountId, subject: m.subject, from: m.from, trust: m.trust, important: m.important,
+          id: m.id, projectId: m.projectId, accountId: m.accountId, subject: m.subject, from: m.from, trust: m.trust, important: m.important, category: m.category,
         })),
       });
       return added.length;
@@ -206,7 +211,12 @@ class AccountWorker {
   summarize(item, folder, account) {
     const summary = summarizeFetched(item, account);
     const headers = item.headers?.toString('utf8') || '';
-    return { ...summary, references: parseReferences(item.headers), trust: classifyTrust({ ...summary, folderRole: folder.role, headers, authServers: trustedAuthServers(account) }) };
+    return {
+      ...summary,
+      references: parseReferences(item.headers),
+      trust: classifyTrust({ ...summary, folderRole: folder.role, headers, authServers: trustedAuthServers(account) }),
+      category: categorize({ ...summary, headers }),
+    };
   }
 
   async fetchInto(client, folder, account, uids) {
@@ -309,10 +319,27 @@ class AccountWorker {
         this.db.reconcileFolder(folder, serverState, minUid);
       }
       this.db.setFolderState(folder.id, { uidValidity, lastUid });
+      if (folder.role === 'inbox' && client.capabilities?.has('X-GM-EXT-1') && (added.length || !this.gmailTabsDone)) {
+        await this.syncGmailTabs(client, folder).catch(() => {});
+      }
       return added;
     } finally {
       lock.release();
     }
+  }
+
+  /** Ask Gmail which tab each recent inbox message is in (the mailbox must already be open). */
+  async syncGmailTabs(client, folder) {
+    const local = this.db.db.prepare('SELECT uid FROM messages WHERE folder_id = ? ORDER BY uid DESC LIMIT ?').all(folder.id, GMAIL_TAB_WINDOW);
+    if (!local.length) return;
+    const minUid = local[local.length - 1].uid;
+    const byUid = new Map();
+    for (const [gmail, tab] of GMAIL_TABS) {
+      const uids = (await client.search({ uid: `${minUid}:*`, gmraw: `category:${gmail}` }, { uid: true })) || [];
+      for (const uid of uids) if (!byUid.has(uid)) byUid.set(uid, tab);
+    }
+    this.db.setGmailCategories(folder.id, minUid, byUid);
+    this.gmailTabsDone = true;
   }
 
   async prefetchBodies(client) {
@@ -447,6 +474,29 @@ class AccountWorker {
     });
   }
 
+  /** Copy a message in from another account (the raw message is appended to that folder). */
+  importRaw(folderId, raw, { seen = true, flagged = false } = {}) {
+    return this.run(async (client) => {
+      const target = this.db.getFolder(folderId);
+      if (!target || target.account_id !== this.accountId) throw new Error('Folder not found.');
+      await client.append(target.path, raw, [seen && '\\Seen', flagged && '\\Flagged'].filter(Boolean));
+      this.scheduleSync([target.id]);
+    });
+  }
+
+  /** Delete for good (used after a message was copied to another account). */
+  removePermanently(message) {
+    return this.run(async (client) => {
+      const folder = this.db.getFolder(message.folderId);
+      const lock = await client.getMailboxLock(folder.path);
+      try {
+        await client.messageDelete(String(message.uid), { uid: true });
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   appendSent(raw) {
     return this.run(async (client) => {
       const sent = this.folder('sent');
@@ -477,7 +527,11 @@ class SyncManager {
   }
 
   worker(accountId) {
-    if (!this.workers.has(accountId)) this.workers.set(accountId, new AccountWorker(this, accountId));
+    if (!this.workers.has(accountId)) {
+      let resend = false;
+      try { resend = this.db.getAccount(accountId).authType === 'resend'; } catch { /* unknown account: the worker reports it */ }
+      this.workers.set(accountId, resend ? new ResendWorker(this, accountId) : new AccountWorker(this, accountId));
+    }
     return this.workers.get(accountId);
   }
 
@@ -508,3 +562,6 @@ class SyncManager {
 }
 
 module.exports = { SyncManager, folderRole };
+
+// Loaded last: resend.cjs uses this file's helpers.
+const { ResendWorker } = require('./resend.cjs');

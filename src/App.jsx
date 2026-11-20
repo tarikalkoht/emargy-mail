@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, Check, LoaderCircle, Mail } from 'lucide-react';
+import {
+  AlertTriangle, Archive, ArrowLeft, Bell, Check, Copy, CornerUpLeft, Flag, FolderInput, Forward, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, ReplyAll,
+  ShieldAlert, ShieldCheck, Tag, Trash2, Users,
+} from 'lucide-react';
+import logoUrl from './assets/logo.png';
+import TopBar from './components/TopBar';
+import { ContextMenu, FolderPicker } from './components/ContextMenu';
 import Modal from './components/Modal';
 import Logo from './components/Logo';
 import EmptyScene from './components/EmptyScene';
@@ -17,6 +23,15 @@ const api = window.emargy;
 const PAGE = 150;
 const EMPTY = { language: 'en', settings: { theme: 'system', density: 'comfortable', undoSeconds: 10 }, projects: [], accounts: [], folders: [], counts: { total: 0, projects: {}, accounts: {} }, signatures: [], drafts: [], outbox: [] };
 const errorText = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+const TAB_ICONS = { primary: Inbox, promotions: Tag, social: Users, updates: Bell };
+
+/** Views that show the inbox tabs (Gmail style): inboxes, not Important/Flagged/Sent or other folders. */
+function tabbedScope(scope, foldersById) {
+  if (scope.kind === 'unified') return scope.role === 'inbox';
+  if (scope.kind === 'folder') return foldersById[scope.folderId]?.role === 'inbox';
+  return scope.kind === 'project' || scope.kind === 'account';
+}
 
 function scopeParams(scope) {
   switch (scope.kind) {
@@ -78,6 +93,12 @@ export default function App() {
   const [sceneVersion, setSceneVersion] = useState(0);
   const [toast, setToast] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const [category, setCategory] = useState('primary');
+  const [menu, setMenu] = useState(null);
+  const [picker, setPicker] = useState(null);
+  const [appInfo, setAppInfo] = useState(null);
+  const logoImage = useRef(null);
+  const [logoReady, setLogoReady] = useState(false);
   const toastTimer = useRef(null);
   const searchRef = useRef(null);
   const syncedFolders = useRef(new Set());
@@ -101,6 +122,8 @@ export default function App() {
   }, [showToast]);
 
   const params = scopeParams(scope);
+  const foldersByIdEarly = useMemo(() => Object.fromEntries(state.folders.map((f) => [f.id, f])), [state.folders]);
+  const tabbed = tabbedScope(scope, foldersByIdEarly) && state.settings?.inboxTabs !== false;
   const scopeFolders = useMemo(() => {
     if (params.folderId) return state.folders.filter((f) => f.id === params.folderId);
     const accounts = state.accounts.filter((a) => (!params.accountId || a.id === params.accountId) && (!params.projectId || a.projectId === params.projectId));
@@ -129,10 +152,10 @@ export default function App() {
     const { forcedFilter, ...rest } = scopeParams(scope);
     // A slower answer for a view you already left must not replace the current list.
     const request = ++listRequest.current;
-    const result = await api.listMessages({ ...rest, filter: forcedFilter || filter, query, limit });
+    const result = await api.listMessages({ ...rest, filter: forcedFilter || filter, query, limit, category: tabbed ? category : undefined });
     if (request !== listRequest.current) return;
     setList(result);
-  }, [scope, filter, query, limit]);
+  }, [scope, filter, query, limit, tabbed, category]);
   const refreshState = useCallback(async () => setState(await api.getState()), []);
 
   // Initial load and live updates from the sync engine.
@@ -181,6 +204,18 @@ export default function App() {
     return () => { offStatus(); offMail(); offOutbox(); offUpdate(); offOpen(); offScope(); };
   }, [refreshList, refreshState]);
 
+  useEffect(() => {
+    api.appInfo().then((info) => {
+      setAppInfo(info);
+      document.documentElement.dataset.titlebar = info.titleBar ? 'overlay' : 'native';
+    }).catch(() => {});
+    const image = new Image();
+    image.onload = () => { logoImage.current = image; setLogoReady(true); };
+    image.src = logoUrl;
+    const offCompose = api.onComposeNew(() => composeRef.current?.());
+    return () => offCompose();
+  }, []);
+
   // The reader's own picture for empty screens (kept encrypted by the main process).
   const sceneKind = state.settings?.emptyScene || 'trays';
   useEffect(() => {
@@ -188,10 +223,27 @@ export default function App() {
     api.sceneImage().then(setSceneImage).catch(() => setSceneImage(null));
   }, [sceneKind, sceneVersion]);
 
-  // Unread count on the taskbar button.
+  // Unread count on the taskbar button, and a red dot on the icon next to the clock.
   const badgeCount = state.settings?.taskbarBadge === false ? 0 : (state.counts?.total || 0);
   useEffect(() => {
     if (!badgeCount) { api.setBadge({}).catch(() => {}); return; }
+    let trayImage;
+    if (logoImage.current) {
+      const tray = document.createElement('canvas');
+      tray.width = 32;
+      tray.height = 32;
+      const tctx = tray.getContext('2d');
+      tctx.drawImage(logoImage.current, 0, 0, 32, 32);
+      tctx.fillStyle = '#ffffff';
+      tctx.beginPath();
+      tctx.arc(24, 8, 8, 0, Math.PI * 2);
+      tctx.fill();
+      tctx.fillStyle = '#e5484d';
+      tctx.beginPath();
+      tctx.arc(24, 8, 6, 0, Math.PI * 2);
+      tctx.fill();
+      trayImage = tray.toDataURL('image/png');
+    }
     const canvas = document.createElement('canvas');
     canvas.width = 32;
     canvas.height = 32;
@@ -205,8 +257,8 @@ export default function App() {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(badgeCount > 99 ? '99+' : String(badgeCount), 16, 17);
-    api.setBadge({ image: canvas.toDataURL('image/png'), label: `${badgeCount}` }).catch(() => {});
-  }, [badgeCount]);
+    api.setBadge({ image: canvas.toDataURL('image/png'), label: `${badgeCount}`, trayImage }).catch(() => {});
+  }, [badgeCount, logoReady]);
 
   // Theme, density and direction.
   useEffect(() => {
@@ -215,7 +267,10 @@ export default function App() {
     root.dir = language === 'ar' ? 'rtl' : 'ltr';
     root.dataset.density = state.settings?.density || 'comfortable';
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const apply = () => { root.dataset.theme = state.settings?.theme === 'system' ? (media.matches ? 'dark' : 'light') : state.settings?.theme || 'light'; };
+    const apply = () => {
+      root.dataset.theme = state.settings?.theme === 'system' ? (media.matches ? 'dark' : 'light') : state.settings?.theme || 'light';
+      api.setWindowTheme({ dark: root.dataset.theme === 'dark' }).catch(() => {});
+    };
     apply();
     media.addEventListener('change', apply);
     return () => media.removeEventListener('change', apply);
@@ -245,6 +300,7 @@ export default function App() {
 
   const openScope = (next) => {
     setScope(next);
+    setCategory('primary');
     setSelection(new Set());
     setSelectedId(null);
     setThread(null);
@@ -259,12 +315,14 @@ export default function App() {
     const result = await guard(() => api.openThread(message.id));
     setThreadLoading(false);
     if (result) {
+      openedThread.current = result;
       setThread(result);
       setList((current) => ({ ...current, messages: current.messages.map((m) => (m.id === message.id ? { ...m, read: true, threadUnread: false } : m)) }));
       refreshState().catch(() => {});
     }
   };
 
+  const openedThread = useRef(null);
   const openThreadRef = useRef(null);
   openThreadRef.current = openThread;
 
@@ -280,11 +338,13 @@ export default function App() {
     const call = {
       read: () => api.markRead(ids, true), unread: () => api.markRead(ids, false), flag: () => api.setFlagged(ids, true), unflag: () => api.setFlagged(ids, false),
       archive: () => api.archive(ids), trash: () => api.trash(ids), move: () => api.moveTo(ids, folderId),
+      spam: () => api.markSpam(ids), notSpam: () => api.markNotSpam(ids), category: () => api.setCategory(ids, folderId),
     }[action];
     const next = await guard(call);
     if (!next) return;
     setState(next);
-    const removes = ['archive', 'trash', 'move'].includes(action);
+    const inJunk = (id) => list.messages.find((m) => m.id === id)?.folderRole === 'junk' || thread?.messages.find((m) => m.id === id)?.folderRole === 'junk';
+    const removes = ['archive', 'trash', 'move', 'spam'].includes(action) || (action === 'notSpam' && ids.some(inJunk));
     if (removes && thread?.messages.some((m) => ids.includes(m.id))) {
       const index = list.messages.findIndex((m) => m.id === selectedId);
       const following = list.messages.filter((m) => !ids.includes(m.id))[Math.max(0, index)] || null;
@@ -297,29 +357,83 @@ export default function App() {
     if (action === 'archive') showToast(t('archived'));
     if (action === 'trash') showToast(t('movedToTrash'));
     if (action === 'move') showToast(t('moved'));
+    if (action === 'spam') showToast(t('markedSpam'));
+    if (action === 'notSpam') showToast(t('markedNotSpam'));
+    if (action === 'category') showToast(t('categoryMoved', { tab: t(`tab_${folderId || 'primary'}`) }));
+    if (thread && ['spam', 'notSpam'].includes(action) && !removes) {
+      setThread((current) => current && ({ ...current, messages: current.messages.map((m) => (ids.includes(m.id) ? { ...m, trust: action === 'notSpam' ? '' : 'spam' } : m)) }));
+    }
     refreshList();
   };
 
-  const rowAction = async (action, message) => {
-    const ids = await guard(() => api.threadIds(message.id, ['archive', 'trash', 'move'].includes(action)));
-    if (ids) await runAction(action, ids);
+  const MOVING = ['archive', 'trash', 'move', 'spam', 'notSpam'];
+  /** List rows stand for whole conversations: act on every message of each one. */
+  const actOnRows = async (action, rowIds, extra) => {
+    const all = [];
+    for (const id of rowIds) {
+      const ids = await guard(() => api.threadIds(id, MOVING.includes(action)));
+      if (ids) all.push(...ids);
+    }
+    await runAction(action, [...new Set(all)], extra);
   };
+  const rowAction = (action, message) => actOnRows(action, [message.id]);
   const threadAction = (action, ids, folderId) => {
     const messages = thread?.messages || [];
     // Archiving a conversation never moves your own sent copies out of Sent.
     const target = action === 'archive' ? messages.filter((m) => ids.includes(m.id) && m.folderRole !== 'sent').map((m) => m.id) : ids;
     return runAction(action, target, folderId);
   };
-  const bulk = async (action) => {
-    const all = [];
-    for (const id of selection) {
-      const ids = await guard(() => api.threadIds(id, ['archive', 'trash', 'move'].includes(action)));
-      if (ids) all.push(...ids);
-    }
+  const bulk = async (action, extra) => {
+    const rows = [...selection];
     setSelection(new Set());
-    await runAction(action, [...new Set(all)]);
+    await actOnRows(action, rows, extra);
+  };
+  const dropMessages = async (rowIds, folderId) => {
+    setSelection(new Set());
+    await actOnRows('move', rowIds, folderId);
   };
 
+  /** Right-click on a conversation in the list. */
+  const rowMenuItems = (message) => {
+    const rows = selection.has(message.id) ? [...selection] : [message.id];
+    const many = rows.length > 1;
+    const unread = message.threadUnread ?? !message.read;
+    const flagged = message.threadFlagged ?? message.flagged;
+    const junk = message.folderRole === 'junk';
+    const replyFromRow = async (mode) => {
+      await openThread(message);
+      const last = openedThread.current?.messages?.at(-1);
+      if (last) reply(mode, last);
+    };
+    const act = (action, extra) => () => actOnRows(action, rows, extra);
+    return [
+      !many && { label: t('open'), icon: MailOpen, onClick: () => openThread(message) },
+      !many && message.folderRole !== 'sent' && { label: t('reply'), icon: CornerUpLeft, onClick: () => replyFromRow('reply') },
+      !many && { label: t('replyAll'), icon: ReplyAll, onClick: () => replyFromRow('replyAll') },
+      !many && { label: t('forward'), icon: Forward, onClick: () => replyFromRow('forward') },
+      !many && { separator: true },
+      { label: unread ? t('markRead') : t('markUnread'), icon: unread ? MailOpen : Mail, onClick: act(unread ? 'read' : 'unread') },
+      { label: flagged ? t('unflag') : t('flag'), icon: Flag, onClick: act(flagged ? 'unflag' : 'flag') },
+      { separator: true },
+      { label: t('moveToEllipsis'), icon: FolderInput, onClick: () => setPicker({ x: menu?.x ?? 0, y: menu?.y ?? 0, rows }) },
+      tabbed && !many && { heading: t('moveToTab') },
+      ...(tabbed && !many ? ['primary', 'promotions', 'social', 'updates'].map((key) => ({
+        key: `tab-${key}`, label: t(`tab_${key}`), icon: TAB_ICONS[key], checked: (message.category || 'primary') === key,
+        onClick: () => (message.category === key ? null : runAction('category', [message.id], key)),
+      })) : []),
+      { separator: true },
+      junk || ['spam', 'suspicious'].includes(message.trust)
+        ? { label: t('notSpam'), icon: ShieldCheck, onClick: act('notSpam') }
+        : { label: t('reportSpam'), icon: ShieldAlert, onClick: act('spam') },
+      { label: t('archive'), icon: Archive, hint: 'E', onClick: act('archive') },
+      { label: t('delete'), icon: Trash2, hint: 'Del', danger: true, onClick: act('trash') },
+      { separator: true },
+      { label: selection.has(message.id) ? t('deselect') : t('select'), icon: ListChecks, onClick: () => toggleSelect(message.id) },
+      !many && message.fromAddress && { label: t('copySender'), icon: Copy, onClick: () => api.copyText(message.fromAddress).then(() => showToast(t('copied'))) },
+    ];
+  };
+
+  const composeRef = useRef(null);
   const compose = (initial = {}) => {
     if (!state.accounts.length) return showToast(t('addAccountFirst'), 'error');
     const defaultAccount = scope.accountId || (scope.kind === 'folder' ? foldersById[scope.folderId]?.accountId : null)
@@ -328,6 +442,7 @@ export default function App() {
     setComposer({ key: Date.now(), inline: false, initial: { mode: 'new', accountId: defaultAccount || state.accounts[0].id, focusTo: true, ...initial } });
     return null;
   };
+  composeRef.current = () => compose();
   const reply = (mode, message, options = {}) => {
     const initial = buildReply(mode, message, accountsById[message.accountId], t, language, options.prefill);
     setComposer({ key: Date.now(), inline: true, initial });
@@ -377,7 +492,7 @@ export default function App() {
         Delete: () => last && threadAction('trash', ids),
         s: () => last && threadAction(thread.messages.some((m) => m.flagged) ? 'unflag' : 'flag', ids),
         u: () => last && threadAction('unread', ids),
-        Escape: () => setSelection(new Set()),
+        Escape: () => { setSelection(new Set()); setMenu(null); },
       };
       if (event.key === 'Escape' && view !== 'mail' && !addingTo && !document.querySelector('.modal')) { event.preventDefault(); setView('mail'); return; }
       const handler = keys[event.key];
@@ -391,6 +506,8 @@ export default function App() {
 
   if (!state.accounts.length) {
     return (
+      <div className="app-shell">
+      <TopBar t={t} showSearch={false} />
       <div className="welcome">
         <div className="welcome-card">
           <div className="welcome-brand"><Logo size={34} /><strong>{t('appName')}</strong>
@@ -401,6 +518,7 @@ export default function App() {
           <AccountSetup t={t} projects={state.projects} firstRun onDone={(next) => { setState(next); setExpanded(new Set(next.projects.map((p) => p.id))); }} />
         </div>
         <Toast toast={toast} onClose={() => setToast(null)} />
+      </div>
       </div>
     );
   }
@@ -423,6 +541,8 @@ export default function App() {
   const threadAccount = thread?.messages?.[0] && accountsById[thread.messages[0].accountId];
 
   return (
+    <div className="app-shell">
+    <TopBar t={t} search={search} onSearch={(value) => { setSearch(value); if (view !== 'mail') setView('mail'); }} searchRef={searchRef} scopeLabel={scope.kind === 'unified' && scope.role === 'inbox' ? '' : title} />
     <div className="app">
       <Sidebar
         t={t}
@@ -437,6 +557,7 @@ export default function App() {
         onAddProject={() => setView('settings-projects')}
         onAddAccount={(projectId) => setAddingTo(projectId)}
         onReorderAccounts={async (ids) => { const next = await guard(() => api.reorderAccounts(ids)); if (next) setState(next); }}
+        onDropMessages={dropMessages}
         update={update}
       />
       {view === 'mail' && (
@@ -456,6 +577,11 @@ export default function App() {
             onClearSelection={() => setSelection(new Set())}
             onAction={rowAction}
             onBulk={bulk}
+            onBulkMove={(event) => { const box = event.currentTarget.getBoundingClientRect(); setPicker({ x: box.left, y: box.bottom + 4, rows: [...selection] }); }}
+            category={category}
+            onCategory={(key) => { setCategory(key); setLimit(PAGE); setSelection(new Set()); }}
+            onRowMenu={(message, event) => setMenu({ x: event.clientX, y: event.clientY, message })}
+            junkView={scope.kind === 'folder' && foldersById[scope.folderId]?.role === 'junk'}
             onSelectAll={() => setSelection(new Set(list.messages.map((m) => m.id)))}
             older={older}
             loadingOlder={loadingOlder}
@@ -474,12 +600,10 @@ export default function App() {
             }}
             onLoadMore={() => setLimit((n) => n + PAGE)}
             search={search}
-            onSearch={setSearch}
             filter={params.forcedFilter || filter}
             onFilter={(key) => { setFilter(key); setLimit(PAGE); }}
             onSync={async () => { setSyncing(true); const next = await guard(() => api.syncAll()); if (next) setState(next); setSyncing(false); refreshList(); }}
             syncing={syncing || state.accounts.some((a) => a.sync?.status === 'syncing')}
-            searchRef={searchRef}
           />
           <main className="reading-pane">
             {composer && !composer.inline ? composerNode : (
@@ -491,6 +615,7 @@ export default function App() {
                 project={threadProject}
                 account={threadAccount}
                 folders={state.folders}
+                state={state}
                 onAction={threadAction}
                 onReply={reply}
                 onToast={showToast}
@@ -532,7 +657,20 @@ export default function App() {
           </div>
         </Modal>
       )}
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={rowMenuItems(menu.message)} onClose={() => setMenu(null)} />}
+      {picker && (
+        <FolderPicker
+          x={picker.x}
+          y={picker.y}
+          t={t}
+          state={state}
+          currentFolderIds={[...new Set(picker.rows.map((id) => list.messages.find((m) => m.id === id)?.folderId).filter(Boolean))]}
+          onClose={() => setPicker(null)}
+          onPick={(folderId) => { setSelection(new Set()); actOnRows('move', picker.rows, folderId); }}
+        />
+      )}
       <Toast toast={toast} onClose={() => { clearTimeout(toastTimer.current); setToast(null); }} />
+    </div>
     </div>
   );
 }

@@ -270,6 +270,7 @@ function tlsProbe(host, port, timeout = 5000) {
 module.exports = {
   detectServers,
   extractInlineImages,
+  htmlDocument,
   buildRawMessage,
   extractAttachment,
   imapConfig,

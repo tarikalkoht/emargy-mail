@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, ShieldAlert, Sparkles, Trash2,
+  Archive, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, ShieldAlert, ShieldCheck, Sparkles, Trash2,
 } from 'lucide-react';
 import { TrustBadge } from './MessageList';
 import AiPanel from './AiPanel';
+import { FolderPicker } from './ContextMenu';
 import { prepareEmailHtml, sanitizeForEditor } from '../emailHtml';
 import { classNames, displayName, escapeHtml, formatFullDate, formatListDate, formatSize, initial, paragraphsToHtml, parseAddresses, senderHue, textToHtml } from '../lib/format';
 
@@ -30,7 +31,7 @@ function Avatar({ value, size = 36 }) {
   return <span className="avatar" style={{ '--hue': senderHue(value), width: size, height: size }} aria-hidden="true">{initial(value)}</span>;
 }
 
-function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate, onMoveToJunk }) {
+function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate, onMoveToJunk, onNotSpam }) {
   const [showOnce, setShowOnce] = useState(false);
   const [details, setDetails] = useState(false);
   const content = message.content;
@@ -75,10 +76,11 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
         <button className="icon-button quiet" onClick={() => onTranslate(message)} title={t('aiTranslate')} aria-label={t('aiTranslate')}><Languages size={16} /></button>
         <button className="icon-button quiet" onClick={() => onReply('reply', message)} title={t('reply')} aria-label={t('reply')}><Reply size={16} /></button>
       </header>
-      {['spam', 'suspicious'].includes(message.trust) && (
+      {(['spam', 'suspicious'].includes(message.trust) || message.folderRole === 'junk') && (
         <div className={classNames('trust-warning', message.trust)} role="alert">
           <ShieldAlert size={17} />
-          <span>{t(message.trust === 'spam' ? 'spamWarning' : 'suspiciousWarning')}</span>
+          <span>{t(message.trust === 'suspicious' ? 'suspiciousWarning' : 'spamWarning')}</span>
+          <button className="primary" onClick={() => onNotSpam(message)}><ShieldCheck size={14} />{t('notSpam')}</button>
           {onMoveToJunk && <button onClick={() => onMoveToJunk(message)}>{t('moveToJunk')}</button>}
         </div>
       )}
@@ -153,9 +155,9 @@ Subject: ${c.subject || ''}
 ${c.text || ''}`;
 }
 
-export default function ThreadView({ t, language, thread, loading, project, account, folders, onAction, onReply, onTrustSender, onToast, composer, empty }) {
+export default function ThreadView({ t, language, thread, loading, project, account, folders, state, onAction, onReply, onTrustSender, onToast, composer, empty }) {
   const [expanded, setExpanded] = useState(new Set());
-  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveAt, setMoveAt] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [job, setJob] = useState(null);
   const jobId = useRef(0);
@@ -166,7 +168,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
   useEffect(() => {
     // Open the newest message and every unread one, like a real conversation view.
     setExpanded(new Set(messages.filter((m, i) => i === messages.length - 1 || !m.read).map((m) => m.id)));
-    setMoveOpen(false);
+    setMoveAt(null);
     setAiOpen(false);
     jobId.current += 1; // a late answer for the previous conversation is ignored
     if (job?.running) window.emargy.aiCancel();
@@ -204,7 +206,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
   const translate = (message, target = language) => runAi('translate', t(target === 'ar' ? 'aiTranslateToArabic' : 'aiTranslateToEnglish'), message.content.text || message.content.subject || '', target);
   const cancelAi = () => { jobId.current += 1; setJob(null); window.emargy.aiCancel(); };
   const flagged = messages.some((m) => m.flagged);
-  const moveTargets = folders.filter((f) => f.accountId === last.accountId && f.id !== last.folderId);
+  const inJunk = messages.every((m) => m.folderRole === 'junk');
 
   return (
     <div className="thread">
@@ -231,14 +233,11 @@ export default function ThreadView({ t, language, thread, loading, project, acco
         <button className="icon-button quiet" onClick={() => onAction('trash', ids)} title={`${t('delete')} (Del)`} aria-label={t('delete')}><Trash2 size={17} /></button>
         <button className={classNames('icon-button quiet', flagged && 'flag-on')} onClick={() => onAction(flagged ? 'unflag' : 'flag', ids)} title={`${flagged ? t('unflag') : t('flag')} (S)`} aria-label={t('flag')}><Flag size={17} /></button>
         <button className="icon-button quiet" onClick={() => onAction('unread', ids)} title={`${t('markUnread')} (U)`} aria-label={t('markUnread')}><MailOpen size={17} /></button>
-        <span className="tool-menu">
-          <button className="icon-button quiet" onClick={() => setMoveOpen(!moveOpen)} title={t('moveTo')} aria-label={t('moveTo')}><FolderInput size={17} /></button>
-          {moveOpen && (
-            <div className="menu">
-              {moveTargets.map((folder) => <button key={folder.id} onClick={() => { setMoveOpen(false); onAction('move', ids, folder.id); }}>{t(`folder_${folder.role}`, null, folder.name)}</button>)}
-            </div>
-          )}
-        </span>
+        <button className="icon-button quiet" onClick={(e) => { const box = e.currentTarget.getBoundingClientRect(); setMoveAt(moveAt ? null : { x: box.left, y: box.bottom + 4 }); }} title={t('moveTo')} aria-label={t('moveTo')}><FolderInput size={17} /></button>
+        <button className={classNames('icon-button quiet', inJunk && 'flag-on')} onClick={() => onAction(inJunk ? 'notSpam' : 'spam', ids)} title={inJunk ? t('notSpam') : t('reportSpam')} aria-label={inJunk ? t('notSpam') : t('reportSpam')}>{inJunk ? <ShieldCheck size={17} /> : <ShieldAlert size={17} />}</button>
+        {moveAt && state && (
+          <FolderPicker x={moveAt.x} y={moveAt.y} t={t} state={state} currentFolderIds={[...new Set(messages.map((m) => m.folderId))]} onClose={() => setMoveAt(null)} onPick={(folderId) => onAction('move', ids, folderId)} />
+        )}
       </div>
       <div className="thread-scroll">
         <header className="thread-head">
@@ -263,6 +262,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
               onTrustSender={onTrustSender}
               onReply={onReply}
               onTranslate={(m) => translate(m)}
+              onNotSpam={(m) => onAction('notSpam', [m.id])}
               onMoveToJunk={(() => {
                 const junk = folders.find((f) => f.accountId === message.accountId && f.role === 'junk');
                 return junk && message.folderId !== junk.id ? () => onAction('move', [message.id], junk.id) : null;

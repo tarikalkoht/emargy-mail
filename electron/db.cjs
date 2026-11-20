@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { classifyTrust, trustedAuthServers } = require('./core.cjs');
+const { CATEGORIES, categorize } = require('./categorize.cjs');
 
 const SCHEMA_VERSION = 2;
 const AUDIT_LIMIT = 1000;
@@ -62,6 +63,8 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, details BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS trusted_image_senders (fingerprint TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS sender_rules (fingerprint TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '', verdict TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS remote_gone (account_id TEXT NOT NULL, remote_id TEXT NOT NULL, PRIMARY KEY (account_id, remote_id));
 `;
 
 function searchText(header) {
@@ -130,7 +133,13 @@ class Database {
     if (!columns('messages').has('ai_important')) this.db.exec('ALTER TABLE messages ADD COLUMN ai_important INTEGER NOT NULL DEFAULT 0');
     if (!columns('messages').has('ai_checked')) this.db.exec('ALTER TABLE messages ADD COLUMN ai_checked INTEGER NOT NULL DEFAULT 0');
     if (!columns('messages').has('ai_note')) this.db.exec('ALTER TABLE messages ADD COLUMN ai_note BLOB');
+    // Inbox tab (primary, promotions, social, updates); locked = Gmail chose it.
+    if (!columns('messages').has('category')) this.db.exec("ALTER TABLE messages ADD COLUMN category TEXT NOT NULL DEFAULT ''");
+    if (!columns('messages').has('category_locked')) this.db.exec('ALTER TABLE messages ADD COLUMN category_locked INTEGER NOT NULL DEFAULT 0');
+    // Accounts without IMAP (Resend) keep the provider's own id of each message.
+    if (!columns('messages').has('remote_id')) this.db.exec('ALTER TABLE messages ADD COLUMN remote_id TEXT');
     this.db.exec('CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_key)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS messages_remote ON messages (account_id, remote_id)');
   }
 
   close() {
@@ -214,6 +223,7 @@ class Database {
     if (!withSecrets) {
       delete account.password;
       delete account.oauth;
+      delete account.apiKey;
     }
     return account;
   }
@@ -335,9 +345,10 @@ class Database {
 
   // Messages -----------------------------------------------------------------
   loadHeaderCache() {
+    this.loadSenderRules();
     this.headers = new Map();
     const rows = this.db.prepare(`SELECT m.id, m.account_id, m.project_id, m.folder_id, m.uid, m.date, m.seen, m.flagged,
-      m.important, m.has_attachments, m.size, m.header, m.thread_key, m.trust, m.ai_important, m.ai_note, m.ai_checked, m.raw IS NOT NULL AS cached, f.role
+      m.important, m.has_attachments, m.size, m.header, m.thread_key, m.trust, m.ai_important, m.ai_note, m.ai_checked, m.category, m.category_locked, m.remote_id, m.raw IS NOT NULL AS cached, f.role
       FROM messages m JOIN folders f ON f.id = m.folder_id`).all();
     for (const row of rows) this.cacheHeader(row);
     this.sortHeaders();
@@ -364,10 +375,14 @@ class Database {
     };
     entry.threadKey = row.thread_key || this.vault.fingerprint(threadRoot(header, row.id));
     // Older rows have no stored verdict yet: the subject and folder already tell spam apart.
-    entry.trust = row.trust || classifyTrust({ subject: header.subject, from: header.from, fromAddress: header.fromAddress, folderRole: row.role });
+    entry.serverTrust = row.trust || classifyTrust({ subject: header.subject, from: header.from, fromAddress: header.fromAddress, folderRole: row.role });
     entry.aiImportant = Boolean(row.ai_important);
     entry.aiChecked = Boolean(row.ai_checked);
     entry.aiNote = row.ai_note ? this.vault.decryptJson(row.ai_note) : null;
+    entry.autoCategory = CATEGORIES.includes(row.category) ? row.category : categorize(header);
+    entry.categoryLocked = Boolean(row.category_locked);
+    entry.remoteId = row.remote_id || null;
+    this.applySenderRule(entry);
     entry.search = searchText(entry);
     this.headers.set(row.id, entry);
     return entry;
@@ -377,11 +392,114 @@ class Database {
     this.sorted = [...this.headers.values()].sort((a, b) => b.dateValue - a.dateValue);
   }
 
+  // Sender rules: "not spam" / "spam" and "always in this tab", keyed by a fingerprint of the address.
+  loadSenderRules() {
+    this.senderRules = new Map(this.db.prepare('SELECT fingerprint, category, verdict FROM sender_rules').all()
+      .map((r) => [r.fingerprint, { category: r.category, verdict: r.verdict }]));
+  }
+
+  senderRule(address) {
+    if (!address || !this.senderRules?.size) return null;
+    return this.senderRules.get(this.vault.fingerprint(address)) || null;
+  }
+
+  /** The reader's own choices win over the server's spam verdict and over the automatic tab. */
+  applySenderRule(entry) {
+    const rule = this.senderRule(entry.fromAddress);
+    entry.category = CATEGORIES.includes(rule?.category) ? rule.category : entry.autoCategory;
+    let trust = entry.serverTrust || '';
+    // "Not spam" is keyed on the From address, which anyone can fake, so it only lifts the
+    // spam filter's verdict. A failed sender check ('suspicious') always stays visible.
+    if (rule?.verdict === 'safe' && trust === 'spam' && entry.folderRole !== 'junk') trust = '';
+    if (rule?.verdict === 'spam' && trust !== 'spam') trust = 'spam';
+    entry.trust = trust;
+    return entry;
+  }
+
+  setSenderRule(address, changes) {
+    if (!address) return 0;
+    const fingerprint = this.vault.fingerprint(address);
+    const current = this.senderRules.get(fingerprint) || { category: '', verdict: '' };
+    const next = { ...current, ...changes };
+    if (!next.category && !next.verdict) {
+      this.db.prepare('DELETE FROM sender_rules WHERE fingerprint = ?').run(fingerprint);
+      this.senderRules.delete(fingerprint);
+    } else {
+      this.db.prepare(`INSERT INTO sender_rules (fingerprint, category, verdict) VALUES (?, ?, ?)
+        ON CONFLICT(fingerprint) DO UPDATE SET category = excluded.category, verdict = excluded.verdict`).run(fingerprint, next.category, next.verdict);
+      this.senderRules.set(fingerprint, next);
+    }
+    let changed = 0;
+    const needle = String(address).toLowerCase().trim();
+    for (const header of this.headers.values()) {
+      if (String(header.fromAddress || '').toLowerCase().trim() === needle) { this.applySenderRule(header); changed += 1; }
+    }
+    return changed;
+  }
+
+  /** Gmail's own tabs for these UIDs; every other message of the window is in Primary. */
+  setGmailCategories(folderId, minUid, byUid) {
+    const update = this.db.prepare('UPDATE messages SET category = ?, category_locked = 1 WHERE id = ?');
+    this.transaction(() => {
+      for (const header of this.sorted) {
+        if (header.folderId !== folderId || header.uid < minUid) continue;
+        const category = byUid.get(header.uid) || 'primary';
+        if (header.autoCategory === category && header.categoryLocked) continue;
+        update.run(category, header.id);
+        header.autoCategory = category;
+        header.categoryLocked = true;
+        this.applySenderRule(header);
+      }
+    });
+  }
+
+  // Accounts without IMAP (Resend) ---------------------------------------------
+  knownRemoteIds(accountId) {
+    const ids = new Set(this.db.prepare('SELECT remote_id FROM messages WHERE account_id = ? AND remote_id IS NOT NULL').all(accountId).map((r) => r.remote_id));
+    for (const row of this.db.prepare('SELECT remote_id FROM remote_gone WHERE account_id = ?').all(accountId)) ids.add(row.remote_id);
+    return ids;
+  }
+
+  nextUid(folderId) {
+    return (this.db.prepare('SELECT MAX(uid) AS uid FROM messages WHERE folder_id = ?').get(folderId)?.uid || 0) + 1;
+  }
+
+  /** Move a stored message to another folder of the same account, on this computer only. */
+  moveLocal(id, targetFolderId) {
+    const header = this.getMessage(id);
+    const target = this.getFolder(targetFolderId);
+    if (!target || target.account_id !== header.accountId) throw new Error('Choose another folder in the same account.');
+    const uid = this.nextUid(target.id);
+    const newId = `${target.account_id}:${target.id}:${uid}`;
+    this.transaction(() => {
+      this.db.prepare(`INSERT INTO messages (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, raw,
+        thread_key, trust, ai_important, ai_checked, ai_note, category, category_locked, remote_id)
+        SELECT ?, account_id, project_id, ?, ?, date, seen, flagged, important, has_attachments, size, header, raw,
+        thread_key, trust, ai_important, ai_checked, ai_note, category, category_locked, remote_id FROM messages WHERE id = ?`).run(newId, target.id, uid, id);
+      this.db.prepare('DELETE FROM messages WHERE id = ?').run(id);
+    });
+    this.headers.delete(id);
+    this.headers.set(newId, { ...header, id: newId, folderId: target.id, folderRole: target.role, uid });
+    this.applySenderRule(this.headers.get(newId));
+    this.sortHeaders();
+    return newId;
+  }
+
+  /** Remember a provider message the reader deleted for good, so the next sync does not bring it back. */
+  forgetRemote(accountId, remoteId) {
+    if (remoteId) this.db.prepare('INSERT OR IGNORE INTO remote_gone (account_id, remote_id) VALUES (?, ?)').run(accountId, remoteId);
+  }
+
+  setSeenLocal(ids, seen) {
+    const update = this.db.prepare('UPDATE messages SET seen = ? WHERE id = ?');
+    this.transaction(() => ids.forEach((id) => { update.run(seen ? 1 : 0, id); const h = this.headers.get(id); if (h) h.read = Boolean(seen); }));
+  }
+
   insertMessages(folder, messages) {
     if (!messages.length) return [];
     const insert = this.db.prepare(`INSERT OR IGNORE INTO messages
-      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, thread_key, trust)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (id, account_id, project_id, folder_id, uid, date, seen, flagged, important, has_attachments, size, header, thread_key, trust, category, remote_id, raw)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const added = [];
     this.transaction(() => {
       for (const message of messages) {
@@ -396,10 +514,13 @@ class Database {
           has_attachments: message.hasAttachments ? 1 : 0, size: message.size || 0, header: this.vault.encryptJson(header),
           thread_key: this.vault.fingerprint(threadRoot(header, id)),
           trust: message.trust || '',
+          category: CATEGORIES.includes(message.category) ? message.category : categorize(message),
+          remote_id: message.remoteId || null,
+          raw: message.raw ? this.vault.encrypt(message.raw) : null,
         };
         const result = insert.run(row.id, row.account_id, row.project_id, row.folder_id, row.uid, row.date, row.seen, row.flagged,
-          row.important, row.has_attachments, row.size, row.header, row.thread_key, row.trust);
-        if (result.changes) added.push(this.cacheHeader({ ...row, cached: 0, role: folder.role }));
+          row.important, row.has_attachments, row.size, row.header, row.thread_key, row.trust, row.category, row.remote_id, row.raw);
+        if (result.changes) added.push(this.cacheHeader({ ...row, cached: row.raw ? 1 : 0, role: folder.role }));
       }
     });
     this.sortHeaders();
@@ -464,13 +585,23 @@ class Database {
     const end = text.search(/\r?\n\r?\n/);
     let authServers = [];
     try { authServers = trustedAuthServers(this.getAccount(header.accountId)); } catch { /* account removed */ }
+    const headerBlock = end > 0 ? text.slice(0, end) : text.slice(0, 20000);
+    if (!header.categoryLocked) {
+      const category = categorize({ ...header, headers: headerBlock });
+      if (category !== header.autoCategory) {
+        this.db.prepare('UPDATE messages SET category = ? WHERE id = ?').run(category, id);
+        header.autoCategory = category;
+        this.applySenderRule(header);
+      }
+    }
     const trust = classifyTrust({
       subject: header.subject, from: header.from, fromAddress: header.fromAddress, folderRole: header.folderRole,
-      headers: end > 0 ? text.slice(0, end) : text.slice(0, 20000), authServers, dkimDomains,
+      headers: headerBlock, authServers, dkimDomains,
     });
-    if (trust === header.trust) return false;
+    if (trust === header.serverTrust) return false;
     this.db.prepare('UPDATE messages SET trust = ? WHERE id = ?').run(trust, id);
-    header.trust = trust;
+    header.serverTrust = trust;
+    this.applySenderRule(header);
     return true;
   }
 
@@ -518,10 +649,14 @@ class Database {
    * List conversations. A conversation appears once, represented by its newest
    * message in the selected folder(s), with a count and unread/flag summary.
    */
-  listMessages({ projectId = 'all', accountId = 'all', folderId = null, folderRole = 'inbox', filter = 'all', query = '', offset = 0, limit = 200, threaded = true } = {}) {
+  listMessages({ projectId = 'all', accountId = 'all', folderId = null, folderRole = 'inbox', filter = 'all', query = '', offset = 0, limit = 200, threaded = true, category = '' } = {}) {
     const needle = String(query || '').trim().toLowerCase();
     const serverHits = needle ? this.searchHits?.get(needle) : null;
-    const matches = this.sorted.filter((m) => {
+    // Tabs only make sense for an inbox that is not being searched.
+    const folderIsInbox = folderId ? this.getFolder(folderId)?.role === 'inbox' : folderRole === 'inbox';
+    const tabbed = Boolean(folderIsInbox && !needle && CATEGORIES.includes(category));
+    const tabs = tabbed ? Object.fromEntries(CATEGORIES.map((c) => [c, { unread: 0, total: 0 }])) : null;
+    const all = this.sorted.filter((m) => {
       const anyFolder = needle || folderRole === 'any';
       if (folderId ? m.folderId !== folderId : (anyFolder ? ['trash', 'junk'].includes(m.folderRole) : m.folderRole !== folderRole)) return false;
       if (projectId !== 'all' && m.projectId !== projectId) return false;
@@ -533,6 +668,15 @@ class Database {
       if (filter === 'attachments' && !m.hasAttachments) return false;
       return !needle || m.search.includes(needle) || Boolean(serverHits?.has(m.id));
     });
+    let matches = all;
+    if (tabbed) {
+      for (const m of all) {
+        const tab = tabs[m.category] || tabs.primary;
+        tab.total += 1;
+        if (!m.read && m.trust !== 'spam') tab.unread += 1;
+      }
+      matches = all.filter((m) => (m.category || 'primary') === category);
+    }
     let items = matches;
     if (threaded) {
       const threads = new Map();
@@ -551,7 +695,8 @@ class Database {
     }
     return {
       total: items.length,
-      messages: items.slice(offset, offset + limit).map(({ search, dateValue, seenIds, ...message }) => message),
+      tabs,
+      messages: items.slice(offset, offset + limit).map(({ search, dateValue, seenIds, autoCategory, serverTrust, ...message }) => message),
     };
   }
 

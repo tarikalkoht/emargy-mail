@@ -26,6 +26,7 @@ async function startMailServers({ imapPort = 0, smtpPort = 0, user = 'tester@ema
         folders: {
           Sent: { 'special-use': '\\Sent', messages: [] },
           Trash: { 'special-use': '\\Trash', messages: [] },
+          Junk: { 'special-use': '\\Junk', messages: [] },
         },
       },
     },

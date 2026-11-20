@@ -3,7 +3,7 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { classNames } from '../lib/format';
-import Logo from './Logo';
+import { DRAG_TYPE } from './MessageList';
 
 const ROLE_ORDER = ['inbox', 'drafts', 'sent', 'archive', 'all', 'junk', 'trash', 'custom'];
 const ROLE_ICON = { inbox: Inbox, drafts: FileText, sent: Send, archive: Archive, all: Layers, junk: AlertOctagon, trash: Trash2, custom: Folder };
@@ -12,9 +12,27 @@ function sameScope(a, b) {
   return a && b && a.kind === b.kind && a.role === b.role && a.projectId === b.projectId && a.accountId === b.accountId && a.folderId === b.folderId;
 }
 
-function NavItem({ icon: Icon, label, count, active, onClick, depth = 0, tone }) {
+/** Messages dragged from the list can be dropped on a folder (or an account = its inbox). */
+function dropProps(folderId, onDropMessages, setOver, over) {
+  if (!folderId || !onDropMessages) return {};
+  const accepts = (event) => [...event.dataTransfer.types].includes(DRAG_TYPE);
+  return {
+    'data-drop': over === folderId ? 'over' : undefined,
+    onDragOver: (event) => { if (!accepts(event)) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; setOver(folderId); },
+    onDragLeave: () => setOver((current) => (current === folderId ? null : current)),
+    onDrop: (event) => {
+      if (!accepts(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOver(null);
+      try { onDropMessages(JSON.parse(event.dataTransfer.getData(DRAG_TYPE)), folderId); } catch { /* not ours */ }
+    },
+  };
+}
+
+function NavItem({ icon: Icon, label, count, active, onClick, depth = 0, tone, drop }) {
   return (
-    <button className={classNames('nav-item', active && 'active', tone)} style={{ '--depth': depth }} onClick={onClick} aria-current={active ? 'page' : undefined}>
+    <button className={classNames('nav-item', active && 'active', tone)} style={{ '--depth': depth }} onClick={onClick} aria-current={active ? 'page' : undefined} {...drop}>
       {Icon && <Icon size={16} />}
       <span className="nav-label" dir="auto">{label}</span>
       {count ? <span className="nav-count">{count}</span> : null}
@@ -33,8 +51,9 @@ export function moveAccount(accounts, dragId, targetId) {
   return ids;
 }
 
-export default function Sidebar({ t, state, view, scope, expanded, onToggle, onOpen, onView, onCompose, onAddProject, onAddAccount, onReorderAccounts, update }) {
+export default function Sidebar({ t, state, view, scope, expanded, onToggle, onOpen, onView, onCompose, onAddProject, onAddAccount, onReorderAccounts, onDropMessages, update }) {
   const [dragging, setDragging] = useState(null);
+  const [over, setOver] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const { projects, accounts, folders, counts, drafts, outbox } = state;
   const pending = outbox.filter((item) => item.status === 'queued' || item.status === 'failed').length;
@@ -44,7 +63,6 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
 
   return (
     <nav className="sidebar" aria-label={t('navigation')}>
-      <div className="brand"><Logo size={26} /><span>{t('appName')}</span></div>
       <button className="compose-button" onClick={onCompose}><PenSquare size={17} />{t('newMessage')}</button>
 
       <div className="nav-group">
@@ -98,7 +116,7 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
                           if (order) onReorderAccounts(order);
                         }}
                       >
-                        <div className={classNames('account-line', isMail && sameScope(scope, { kind: 'account', accountId: account.id }) && 'active')}>
+                        <div className={classNames('account-line', isMail && sameScope(scope, { kind: 'account', accountId: account.id }) && 'active')} {...dropProps(accountFolders.find((f) => f.role === 'inbox')?.id, onDropMessages, setOver, over)}>
                           <button className="tab-toggle" onClick={() => onToggle(account.id)} aria-expanded={accountOpen} aria-label={account.email}><ChevronDown size={13} /></button>
                           <button className="account-name" onClick={() => open({ kind: 'account', accountId: account.id })} title={account.sync?.error || account.email}>
                             <span className={classNames('status-dot', `s-${status}`)} />
@@ -115,6 +133,7 @@ export default function Sidebar({ t, state, view, scope, expanded, onToggle, onO
                             count={folder.role === 'inbox' || folder.role === 'custom' ? folder.unread : 0}
                             active={isMail && sameScope(scope, { kind: 'folder', folderId: folder.id })}
                             onClick={() => open({ kind: 'folder', folderId: folder.id, accountId: account.id })}
+                            drop={folder.role === 'drafts' || folder.role === 'all' ? null : dropProps(folder.id, onDropMessages, setOver, over)}
                           />
                         ))}
                       </div>

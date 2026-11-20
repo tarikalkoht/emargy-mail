@@ -54,16 +54,30 @@ async function main() {
     await shot('01-welcome');
     await page.getByRole('button', { name: /Connect account|ربط الحساب/ }).click();
     await page.waitForSelector('.app .row', { timeout: 30000 });
+    // Inbox tabs, like Gmail: the newsletter is in Promotions, the invoice in Updates.
+    await page.locator('.inbox-tabs').waitFor();
+    await page.locator('.inbox-tab.tab-promotions').click();
+    await page.locator('.row', { hasText: 'Black Friday' }).waitFor();
+    await shot('01a-inbox-tabs');
+    await page.locator('.inbox-tab.tab-updates').click();
+    await page.locator('.row', { hasText: 'INV-2026-118' }).waitFor();
+    step('inbox tabs sort mail into Primary, Promotions and Updates');
+    // The rest of this test looks at the whole inbox in one list.
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.locator('.setting-toggle', { hasText: 'Inbox tabs' }).locator('input').click();
+    await page.waitForFunction(() => ![...document.querySelectorAll('.setting-toggle')].find((l) => /Inbox tabs/.test(l.textContent))?.querySelector('input').checked);
+    await page.locator('.back-button').click();
+    await page.locator('.list-pane').waitFor();
     await page.locator('.row').nth(3).waitFor();
     step(`first-run setup connected the account (${await page.locator('.row').count()} conversations)`);
     // Only the newest 3 were synced first; reaching the end of the list loads the older ones from the server.
     await page.waitForFunction(() => document.querySelectorAll('.row').length === 5 && !document.querySelector('.load-older'), null, { timeout: 20000 });
     step('older mail loads from the server when the end of the list is reached');
-    await page.locator('.list-search input').fill('Thursday');
+    await page.locator('.topbar-search input').fill('Thursday');
     await page.locator('.server-search.done').waitFor({ timeout: 20000 });
     if (!(await page.locator('.row', { hasText: 'Meeting notes' }).count())) throw new Error('Search did not find the message by its text.');
     await shot('01c-server-search');
-    await page.locator('.list-search input').fill('');
+    await page.locator('.topbar-search input').fill('');
     step('search also asks the server and finds words inside messages');
     await page.locator('.empty-scene.trays .scene-card h2').waitFor();
     await shot('01b-empty-scene');
@@ -240,6 +254,78 @@ async function main() {
     await page.locator('.suggestions li').first().waitFor();
     await shot('08-new-message');
     step('new message with contact suggestions');
+
+    // Right-click menu, moving between folders and tabs, spam / not spam.
+    await page.getByRole('button', { name: 'الإعدادات' }).click();
+    await page.locator('.setting-toggle', { hasText: 'تبويبات البريد الوارد' }).locator('input').click();
+    await page.locator('.back-button').click();
+    await page.getByRole('button', { name: 'كل الوارد' }).click();
+    await page.locator('.inbox-tab.tab-promotions').click();
+    await page.locator('.row', { hasText: 'Black Friday' }).click({ button: 'right' });
+    await page.locator('.context-menu').waitFor();
+    await shot('12-context-menu');
+    await page.locator('.context-menu').getByRole('menuitem', { name: 'الرئيسية' }).click();
+    await page.locator('.toast', { hasText: 'الرئيسية' }).waitFor();
+    await page.waitForFunction(() => !/Black Friday/.test(document.querySelector('.rows')?.textContent || ''));
+    await page.locator('.inbox-tab.tab-primary').click();
+    await page.locator('.row', { hasText: 'Black Friday' }).waitFor();
+    step('right-click › move to tab: the sender now goes to Primary');
+
+    await page.locator('.row', { hasText: 'Meeting notes' }).click({ button: 'right' });
+    await page.locator('.context-menu').getByRole('menuitem', { name: 'الإبلاغ كرسالة مزعجة' }).click();
+    await page.locator('.toast', { hasText: 'غير المرغوب' }).waitFor();
+    await page.waitForFunction(() => !/Meeting notes/.test(document.querySelector('.rows')?.textContent || ''));
+    await page.locator('.account-line .tab-toggle').first().click();
+    await page.locator('.nav-item', { hasText: 'غير المرغوب' }).click();
+    await page.locator('.row', { hasText: 'Meeting notes' }).click();
+    await page.locator('.trust-warning').getByRole('button', { name: 'ليست غير مرغوب فيها' }).waitFor();
+    await shot('13-junk-not-spam');
+    await page.locator('.trust-warning').getByRole('button', { name: 'ليست غير مرغوب فيها' }).click();
+    await page.locator('.toast', { hasText: 'البريد الوارد' }).waitFor();
+    step('report spam moves to Junk; "not spam" brings it back and trusts the sender');
+
+    await page.getByRole('button', { name: 'كل الوارد' }).click();
+    await page.locator('.inbox-tab.tab-primary').click();
+    await page.locator('.row', { hasText: 'Meeting notes' }).waitFor({ timeout: 15000 });
+    await page.locator('.row', { hasText: 'Meeting notes' }).click({ button: 'right' });
+    await page.locator('.context-menu').getByRole('menuitem', { name: 'نقل إلى…' }).click();
+    await page.locator('.folder-picker').waitFor();
+    await shot('14-move-picker');
+    await page.locator('.folder-picker').getByRole('button', { name: /المحذوفات/ }).click();
+    await page.locator('.toast', { hasText: 'تم النقل' }).waitFor();
+    await page.waitForFunction(() => !/Meeting notes/.test(document.querySelector('.rows')?.textContent || ''));
+    step('move to any folder from the folder picker');
+
+    await page.locator('.row', { hasText: 'Black Friday' }).dragTo(page.locator('.nav-item', { hasText: 'غير المرغوب' }));
+    await page.locator('.toast', { hasText: 'تم النقل' }).waitFor({ timeout: 10000 });
+    await page.waitForFunction(() => !/Black Friday/.test(document.querySelector('.rows')?.textContent || ''));
+    step('drag a message onto a folder in the sidebar');
+
+    // Right-click on text: the app's own menu offers Copy (the native menu is captured, not shown).
+    const menuLabels = await app.evaluate(async ({ BrowserWindow, Menu, clipboard }) => {
+      const original = Menu.prototype.popup;
+      let items = [];
+      Menu.prototype.popup = function capture() { items = this.items; };
+      try {
+        BrowserWindow.getAllWindows()[0].webContents.emit('context-menu', {}, { x: 10, y: 10, isEditable: false, selectionText: 'نص منسوخ INV-1', editFlags: {}, linkURL: 'https://example.com/a', mediaType: 'none' });
+        await clipboard.writeText('');
+        items.find((i) => i.label === 'نسخ')?.click({}, null, null);
+        await new Promise((r) => setTimeout(r, 100));
+        return { labels: items.map((i) => i.label).filter(Boolean), copied: String(await clipboard.readText()) };
+      } finally {
+        Menu.prototype.popup = original;
+      }
+    });
+    if (!menuLabels.labels.includes('نسخ') || menuLabels.copied !== 'نص منسوخ INV-1' || !menuLabels.labels.includes('نسخ الرابط')) throw new Error(`Text right-click menu is wrong: ${JSON.stringify(menuLabels)}`);
+    step(`right-click on selected text copies it (${menuLabels.labels.join(' · ')})`);
+
+    // Closing the window keeps the app running next to the clock.
+    await window.evaluate((w) => w.close());
+    await page.waitForTimeout(400);
+    const hidden = await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; return w && !w.isDestroyed() && !w.isVisible(); });
+    if (!hidden) throw new Error('Closing the window quit the app instead of keeping it in the tray.');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].show());
+    step('closing the window keeps Emargy Mail running in the notification area');
 
     // Uses the Claude/Codex tool signed in on this computer (the reader's subscription).
     if (process.env.EMARGY_E2E_AI) {

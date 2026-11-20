@@ -1,6 +1,8 @@
 const { ImapFlow } = require('imapflow');
 const { MICROSOFT } = require('./oauth.cjs');
 const { buildRawMessage, detectServers, imapConfig, parseRawMessage, verifySmtp, extractAttachment } = require('./mail.cjs');
+const { verifyResend } = require('./resend.cjs');
+const { CATEGORIES } = require('./categorize.cjs');
 
 const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
 const PROVIDERS = new Set(['custom', 'gmail', 'zoho', 'outlook']);
@@ -17,6 +19,10 @@ const DEFAULT_SETTINGS = {
   aiProvider: 'auto',
   autoUpdate: true,
   aiAlerts: false,
+  closeToTray: true,
+  startAtLogin: false,
+  inboxTabs: true,
+  notifyPrimaryOnly: false,
   notifyMode: 'all',
   notifyPreview: true,
   notifySound: true,
@@ -35,6 +41,10 @@ const SETTING_RULES = {
   aiProvider: (v) => ['auto', 'claude', 'codex', 'off'].includes(v),
   autoUpdate: (v) => typeof v === 'boolean',
   aiAlerts: (v) => typeof v === 'boolean',
+  closeToTray: (v) => typeof v === 'boolean',
+  startAtLogin: (v) => typeof v === 'boolean',
+  inboxTabs: (v) => typeof v === 'boolean',
+  notifyPrimaryOnly: (v) => typeof v === 'boolean',
   notifyMode: (v) => ['all', 'important', 'off'].includes(v),
   notifyPreview: (v) => typeof v === 'boolean',
   notifySound: (v) => typeof v === 'boolean',
@@ -238,7 +248,30 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       return api.state();
     },
 
+    /** An address on Resend: mail goes in and out through the Resend API with one key. */
+    async addResendAccount(input) {
+      const projectId = text(input?.projectId, 64);
+      if (!db.listProjects().some((project) => project.id === projectId)) throw new Error('Choose a valid project.');
+      const email = emailAddress(input?.email).toLowerCase();
+      const apiKey = text(input?.apiKey, 200);
+      const existing = db.listAccounts().find((a) => a.email.toLowerCase() === email);
+      if (existing) {
+        const where = db.listProjects().find((p) => p.id === existing.projectId)?.name || '';
+        throw new Error(`DUPLICATE_ACCOUNT:${existing.email}:${where}`);
+      }
+      const checked = await verifyResend({ apiKey, email });
+      const account = {
+        projectId, provider: 'resend', authType: 'resend', displayName: text(input.displayName, 120), email, apiKey,
+        resendMode: checked.mode, allAddresses: Boolean(input.allAddresses),
+      };
+      const id = db.createAccount(account);
+      db.audit('account.created', { accountId: id, projectId, email, via: 'resend', mode: checked.mode });
+      sync.worker(id).syncNow().catch(() => {});
+      return { ...api.state(), resend: checked };
+    },
+
     async addAccount(input) {
+      if (input?.authType === 'resend') return api.addResendAccount(input);
       if (input?.authType || input?.oauth) throw new Error('Use Sign in with Microsoft for this account.');
       const projectId = text(input?.projectId, 64);
       if (!db.listProjects().some((project) => project.id === projectId)) throw new Error('Choose a valid project.');
@@ -285,8 +318,13 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       for (const key of ['signatureNew', 'signatureReply']) {
         if (changes[key] !== undefined) next[key] = changes[key] ? text(changes[key], 64) : null;
       }
+      if (changes.allAddresses !== undefined && account.authType === 'resend') next.allAddresses = Boolean(changes.allAddresses);
       const reconnect = Boolean(changes.password);
-      if (reconnect) {
+      if (changes.password && account.authType === 'resend') {
+        // For Resend the "password" is the API key.
+        next.apiKey = text(changes.password, 200);
+        next.resendMode = (await verifyResend({ apiKey: next.apiKey, email: account.email })).mode;
+      } else if (changes.password) {
         next.password = String(changes.password);
         await testImapLogin(next);
       }
@@ -393,6 +431,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
         offset: Math.max(0, Number(params.offset) || 0),
         limit: Math.min(maxLimit, Math.max(1, Number(params.limit) || (maxLimit > 500 ? maxLimit : 200))),
         threaded: params.threaded !== false,
+        category: settings().inboxTabs && CATEGORIES.includes(params.category) ? params.category : '',
       });
     },
 
@@ -460,11 +499,65 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       return api.state();
     },
 
+    /**
+     * Move to any folder. Inside one account the server moves it; to another account the
+     * message is copied there first and removed from the old place only after that worked.
+     */
     async moveTo(messageIds, folderId) {
+      const target = db.getFolder(Number(folderId));
+      if (!target) throw new Error('Folder not found.');
       await each(messageIds, async (message) => {
-        await sync.worker(message.accountId).moveTo(message, Number(folderId));
-        db.deleteMessage(message.id);
+        if (message.folderId === target.id) return;
+        if (message.accountId === target.account_id) {
+          await sync.worker(message.accountId).moveTo(message, target.id);
+        } else {
+          let raw = db.getRaw(message.id);
+          if (!raw) raw = await sync.worker(message.accountId).fetchRaw(message);
+          await sync.worker(target.account_id).importRaw(target.id, raw, { seen: message.read, flagged: message.flagged });
+          await sync.worker(message.accountId).removePermanently(message);
+          db.audit('message.moved_between_accounts', { from: message.accountId, to: target.account_id });
+        }
+        if (db.headers.has(message.id)) db.deleteMessage(message.id);
       });
+      return api.state();
+    },
+
+    /** Not spam: trust this sender from now on and bring the mail back to the inbox. */
+    async markNotSpam(messageIds) {
+      const list = ids(messageIds).map((id) => db.getMessage(id));
+      for (const message of list) db.setSenderRule(message.fromAddress, { verdict: 'safe' });
+      for (const message of list) {
+        if (message.folderRole !== 'junk') continue;
+        const inbox = db.listAllFolders().find((f) => f.accountId === message.accountId && f.role === 'inbox');
+        if (inbox) {
+          await sync.worker(message.accountId).moveTo(message, inbox.id);
+          if (db.headers.has(message.id)) db.deleteMessage(message.id);
+        }
+      }
+      db.audit('message.not_spam', { count: list.length });
+      return api.state();
+    },
+
+    /** Spam: move to Junk (where the account has one) and treat the sender as spam from now on. */
+    async markSpam(messageIds) {
+      const list = ids(messageIds).map((id) => db.getMessage(id));
+      for (const message of list) db.setSenderRule(message.fromAddress, { verdict: 'spam' });
+      for (const message of list) {
+        const junk = db.listAllFolders().find((f) => f.accountId === message.accountId && f.role === 'junk');
+        if (junk && message.folderId !== junk.id) {
+          await sync.worker(message.accountId).moveTo(message, junk.id);
+          if (db.headers.has(message.id)) db.deleteMessage(message.id);
+        }
+      }
+      db.audit('message.spam', { count: list.length });
+      return api.state();
+    },
+
+    /** Put a sender's mail in another inbox tab, now and in future ('' = automatic again). */
+    setCategory(messageIds, category) {
+      if (category !== '' && !CATEGORIES.includes(category)) throw new Error('Unknown tab.');
+      const senders = new Set(ids(messageIds).map((id) => db.getMessage(id).fromAddress).filter(Boolean));
+      for (const sender of senders) db.setSenderRule(sender, { category });
       return api.state();
     },
 

@@ -1,5 +1,6 @@
 const { sendRawMessage } = require('./mail.cjs');
 const { freshAccount } = require('./oauth.cjs');
+const { sendWithResend } = require('./resend.cjs');
 
 const RETRY_DELAYS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000, 3 * 60 * 60_000];
 const MAX_ATTEMPTS = RETRY_DELAYS.length + 1;
@@ -11,11 +12,12 @@ function providerSavesSentCopy(account) {
 }
 
 class Outbox {
-  constructor({ db, sync, emit = () => {}, send = sendRawMessage }) {
+  constructor({ db, sync, emit = () => {}, send = sendRawMessage, sendApi = sendWithResend }) {
     this.db = db;
     this.sync = sync;
     this.emit = emit;
     this.send = send;
+    this.sendApi = sendApi;
     this.running = false;
     this.timer = null;
   }
@@ -58,17 +60,18 @@ class Outbox {
     this.db.updateOutbox(item.id, { status: 'sending', attempts: item.attempts, nextAttemptAt: item.nextAttemptAt });
     this.emit('outbox:changed', {});
     try {
-      const result = await this.send(account, raw, item.envelope);
+      // Resend accounts send through its API; everything else through SMTP.
+      const result = account.authType === 'resend' ? await this.sendApi(account, item) : await this.send(account, raw, item.envelope);
       this.db.updateOutbox(item.id, { status: 'sent', attempts: item.attempts + 1, nextAttemptAt: 0, sentAt: Date.now() });
       this.db.audit('message.sent', { outboxId: item.id, accountId: account.id, to: item.envelope.to, messageId: result.messageId });
-      if (!providerSavesSentCopy(account)) {
+      if (account.authType !== 'resend' && !providerSavesSentCopy(account)) {
         await this.sync.worker(account.id).appendSent(raw).catch((error) => this.db.audit('message.sent_copy_failed', { outboxId: item.id, error: error.message }));
       }
       this.sync.worker(account.id).syncNow(['sent']).catch(() => {});
       this.emit('outbox:changed', { sent: item.id });
     } catch (error) {
       const attempts = item.attempts + 1;
-      const permanent = attempts >= MAX_ATTEMPTS || /EAUTH|Invalid login|authentication/i.test(`${error.code} ${error.message}`);
+      const permanent = attempts >= MAX_ATTEMPTS || /EAUTH|Invalid login|authentication|invalid_api_key|restricted_api_key|validation_error|invalid_from_address/i.test(`${error.code} ${error.message}`);
       const nextAttemptAt = Date.now() + RETRY_DELAYS[Math.min(attempts - 1, RETRY_DELAYS.length - 1)];
       this.db.updateOutbox(item.id, { status: permanent ? 'failed' : 'queued', attempts, nextAttemptAt, lastError: error.message });
       this.db.audit(permanent ? 'message.send_failed' : 'message.send_retry_scheduled', { outboxId: item.id, accountId: account.id, attempts, error: error.message });

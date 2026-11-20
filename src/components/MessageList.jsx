@@ -1,8 +1,13 @@
 import { useEffect, useRef } from 'react';
-import { Archive, BadgeCheck, CloudDownload, Server, CheckCheck, Flag, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, Paperclip, RefreshCw, Search, ShieldAlert, Sparkles, Trash2, X } from 'lucide-react';
+import {
+  Archive, BadgeCheck, Bell, CloudDownload, Server, CheckCheck, Flag, FolderInput, Inbox, ListChecks, LoaderCircle, Mail, MailOpen, Paperclip, RefreshCw,
+  ShieldAlert, Sparkles, Tag, Trash2, Users, X,
+} from 'lucide-react';
 import { classNames, displayName, formatListDate } from '../lib/format';
 
 const FILTERS = ['all', 'unread', 'important', 'flagged', 'attachments', 'spam'];
+export const TABS = [['primary', Inbox], ['promotions', Tag], ['social', Users], ['updates', Bell]];
+export const DRAG_TYPE = 'application/x-emargy-messages';
 
 export function TrustBadge({ trust, t }) {
   if (trust === 'spam') return <span className="trust-badge spam" title={t('trustSpamHint')}><ShieldAlert size={12} />{t('trustSpam')}</span>;
@@ -11,7 +16,7 @@ export function TrustBadge({ trust, t }) {
   return null;
 }
 
-function Row({ message, project, account, showAccount, active, selected, selecting, language, t, onOpen, onToggle, onAction }) {
+function Row({ message, project, account, showAccount, active, selected, selecting, language, t, onOpen, onToggle, onAction, onMenu, onDragStart }) {
   const unread = message.threadUnread ?? !message.read;
   const flagged = message.threadFlagged ?? message.flagged;
   const who = message.folderRole === 'sent' ? `${t('toLabel')} ${displayName(message.to)}` : displayName(message.from);
@@ -20,9 +25,12 @@ function Row({ message, project, account, showAccount, active, selected, selecti
       role="option"
       aria-selected={active}
       tabIndex={-1}
+      draggable
+      onDragStart={(event) => onDragStart(message, event)}
       className={classNames('row', unread && 'unread', active && 'active', selected && 'selected', ['spam', 'suspicious'].includes(message.trust) && 'untrusted')}
       style={{ '--project': project?.color || 'var(--line-strong)' }}
       onClick={(event) => onOpen(message, event)}
+      onContextMenu={(event) => { event.preventDefault(); onMenu(message, event); }}
     >
       <span className="row-tab" aria-hidden="true" />
       <label className={classNames('row-check', selecting && 'visible')} onClick={(e) => e.stopPropagation()}>
@@ -30,6 +38,7 @@ function Row({ message, project, account, showAccount, active, selected, selecti
       </label>
       <div className="row-main">
         <div className="row-top">
+          {unread && <span className="unread-dot" aria-hidden="true" />}
           <span className="row-from" dir="auto">{who}</span>
           <TrustBadge trust={message.trust} t={t} />
           {message.threadCount > 1 && <span className="row-count">{message.threadCount}</span>}
@@ -43,7 +52,7 @@ function Row({ message, project, account, showAccount, active, selected, selecti
           {message.hasAttachments && <Paperclip size={13} className="clip-icon" />}
           <span>{message.subject || t('noSubject')}</span>
         </div>
-        <div className="row-preview" dir="auto">{message.preview || ' '}</div>
+        <div className="row-preview" dir="auto">{message.preview || ' '}</div>
         {showAccount && (
           <div className="row-where">
             <span className="row-project">{project?.name}</span>
@@ -63,8 +72,8 @@ function Row({ message, project, account, showAccount, active, selected, selecti
 
 export default function MessageList({
   t, language, title, list, projectsById, accountsById, showAccount, selectedId, selection, onOpen, onToggle, onClearSelection,
-  onAction, onBulk, onLoadMore, search, onSearch, filter, onFilter, onSync, syncing, searchRef, onSelectAll, onMarkAllRead,
-  importantView, aiAlerts, onEnableAlerts, older, loadingOlder, onLoadOlder, serverSearch,
+  onAction, onBulk, onBulkMove, onLoadMore, search, filter, onFilter, onSync, syncing, onSelectAll, onMarkAllRead,
+  importantView, aiAlerts, onEnableAlerts, older, loadingOlder, onLoadOlder, serverSearch, category, onCategory, onRowMenu, junkView,
 }) {
   const olderRef = useRef(null);
   // Reaching the end of the list asks the server for older mail by itself.
@@ -78,13 +87,21 @@ export default function MessageList({
   }, [older?.available, search, filter, list.messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const selecting = selection.size > 0;
   const allSelected = list.messages.length > 0 && list.messages.every((m) => selection.has(m.id));
+  const tabs = list.tabs;
+  // Dragging a selected row drags the whole selection.
+  const startDrag = (message, event) => {
+    const ids = selection.has(message.id) ? [...selection] : [message.id];
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData(DRAG_TYPE, JSON.stringify(ids));
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    ghost.textContent = ids.length > 1 ? t('dragCount', { n: ids.length }) : (message.subject || t('noSubject'));
+    document.body.appendChild(ghost);
+    event.dataTransfer.setDragImage(ghost, 12, 12);
+    setTimeout(() => ghost.remove(), 0);
+  };
   return (
     <section className="list-pane" aria-label={title}>
-      <div className="list-search">
-        <Search size={16} />
-        <input ref={searchRef} dir="auto" value={search} onChange={(e) => onSearch(e.target.value)} placeholder={t('searchPlaceholder')} aria-label={t('search')} />
-        {search && <button className="icon-button quiet tiny" onClick={() => onSearch('')} aria-label={t('clear')}><X size={14} /></button>}
-      </div>
       {selecting ? (
         <div className="list-head bulk">
           <label className="select-all" title={t('selectAll')}>
@@ -92,9 +109,11 @@ export default function MessageList({
           </label>
           <strong>{t('selectedCount', { n: selection.size })}</strong>
           <span className="bulk-actions">
-            <button className="button ghost small" onClick={() => onBulk('read')}><MailOpen size={15} />{t('markRead')}</button>
+            <button className="icon-button quiet" onClick={() => onBulk('read')} title={t('markRead')} aria-label={t('markRead')}><MailOpen size={16} /></button>
             <button className="icon-button quiet" onClick={() => onBulk('unread')} title={t('markUnread')} aria-label={t('markUnread')}><Mail size={16} /></button>
             <button className="icon-button quiet" onClick={() => onBulk('archive')} title={t('archive')} aria-label={t('archive')}><Archive size={16} /></button>
+            <button className="icon-button quiet" onClick={(e) => onBulkMove(e)} title={t('moveTo')} aria-label={t('moveTo')}><FolderInput size={16} /></button>
+            <button className="icon-button quiet" onClick={() => onBulk(junkView ? 'notSpam' : 'spam')} title={junkView ? t('notSpam') : t('reportSpam')} aria-label={junkView ? t('notSpam') : t('reportSpam')}><ShieldAlert size={16} /></button>
             <button className="icon-button quiet" onClick={() => onBulk('trash')} title={t('delete')} aria-label={t('delete')}><Trash2 size={16} /></button>
             <button className="icon-button quiet" onClick={() => onBulk('flag')} title={t('flag')} aria-label={t('flag')}><Flag size={16} /></button>
             <button className="icon-button quiet" onClick={onClearSelection} title={t('clear')} aria-label={t('clear')}><X size={16} /></button>
@@ -109,6 +128,17 @@ export default function MessageList({
           <button className="icon-button quiet" onClick={onSelectAll} disabled={!list.messages.length} title={t('selectMessages')} aria-label={t('selectMessages')}><ListChecks size={16} /></button>
           <button className="icon-button quiet" onClick={onMarkAllRead} title={t('markAllRead')} aria-label={t('markAllRead')}><CheckCheck size={16} /></button>
           <button className="icon-button quiet" onClick={onSync} title={t('syncNow')} aria-label={t('syncNow')}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</button>
+        </div>
+      )}
+      {tabs && (
+        <div className="inbox-tabs" role="tablist" aria-label={t('inboxTabs')}>
+          {TABS.map(([key, Icon]) => (
+            <button key={key} role="tab" aria-selected={category === key} className={classNames('inbox-tab', `tab-${key}`, category === key && 'on')} onClick={() => onCategory(key)} title={t(`tab_hint_${key}`)}>
+              {/* The unread count takes the icon's place, so the name has room in a narrow list. */}
+              {tabs[key]?.unread > 0 ? <span className="tab-count">{tabs[key].unread > 99 ? '99+' : tabs[key].unread}</span> : <Icon size={15} />}
+              <span>{t(`tab_${key}`)}</span>
+            </button>
+          ))}
         </div>
       )}
       {importantView && !aiAlerts && (
@@ -128,9 +158,11 @@ export default function MessageList({
           }[serverSearch.status]}</span>
         </div>
       )}
-      <div className="filters" role="tablist">
-        {(importantView ? [] : FILTERS).map((key) => <button key={key} role="tab" aria-selected={filter === key} className={classNames(filter === key && 'on')} onClick={() => onFilter(key)}>{t(`filter_${key}`)}</button>)}
-      </div>
+      {!importantView && (
+        <div className="filters" role="tablist">
+          {FILTERS.map((key) => <button key={key} role="tab" aria-selected={filter === key} className={classNames(filter === key && 'on')} onClick={() => onFilter(key)}>{t(`filter_${key}`)}</button>)}
+        </div>
+      )}
       <div className="rows" role="listbox" aria-label={title}>
         {list.messages.map((message) => (
           <Row
@@ -147,6 +179,8 @@ export default function MessageList({
             onOpen={onOpen}
             onToggle={onToggle}
             onAction={onAction}
+            onMenu={onRowMenu}
+            onDragStart={startDrag}
           />
         ))}
         {list.total > list.messages.length && <button className="load-more" onClick={onLoadMore}>{t('loadMore')}</button>}
@@ -160,7 +194,7 @@ export default function MessageList({
         {!list.messages.length && (
           <div className="list-empty">
             <Inbox size={30} strokeWidth={1.4} />
-            <h3>{search ? t('noResults') : filter !== 'all' ? t('nothingMatches') : t('emptyFolder')}</h3>
+            <h3>{search ? t('noResults') : filter !== 'all' ? t('nothingMatches') : tabs ? t('emptyTab', { tab: t(`tab_${category}`) }) : t('emptyFolder')}</h3>
             <p>{search ? t('noResultsHint') : t('emptyFolderHint')}</p>
           </div>
         )}

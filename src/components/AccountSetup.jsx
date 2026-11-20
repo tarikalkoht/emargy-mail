@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, ChevronDown, ExternalLink, LoaderCircle, Lock } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ExternalLink, KeyRound, LoaderCircle, Lock, Mail, Zap } from 'lucide-react';
 import { classNames } from '../lib/format';
 
 const api = window.emargy;
@@ -29,7 +29,8 @@ export function ColorPicker({ value, onChange, t }) {
  */
 export default function AccountSetup({ t, projects, defaultProjectId, onDone, onCancel, firstRun = false, lockProject = false }) {
   const [project, setProject] = useState({ name: '', color: PROJECT_COLORS[0] });
-  const [form, setForm] = useState({ projectId: defaultProjectId || projects[0]?.id || '', displayName: '', email: '', password: '', username: '' });
+  const [form, setForm] = useState({ projectId: defaultProjectId || projects[0]?.id || '', displayName: '', email: '', password: '', username: '', apiKey: '', allAddresses: false });
+  const [method, setMethod] = useState('mailbox'); // 'mailbox' (IMAP/SMTP or Microsoft) or 'resend' (API)
   const [servers, setServers] = useState(null);
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState('');
@@ -61,6 +62,12 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
         projectId = state.projects[state.projects.length - 1].id;
         setCreatedProjectId(projectId);
       }
+      if (method === 'resend') {
+        setBusy(t('resendChecking'));
+        state = await api.addAccount({ authType: 'resend', projectId, displayName: form.displayName, email: form.email, apiKey: form.apiKey.trim(), allAddresses: form.allAddresses });
+        onDone(state);
+        return;
+      }
       setBusy(t('findingServers'));
       const settings = servers || await detect(form.email);
       if (!settings) throw new Error(t('serversNotFound'));
@@ -76,7 +83,7 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
       onDone(state);
     } catch (err) {
       setError(setupError(t, err));
-      if (!servers?.needsOAuth) setAdvanced(true);
+      if (method === 'mailbox' && !servers?.needsOAuth) setAdvanced(true);
     } finally {
       setBusy('');
     }
@@ -94,24 +101,49 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
       )}
       <fieldset>
         <legend>{t('setupAccountTitle')}</legend>
+        <div className="method-switch" role="radiogroup" aria-label={t('accountType')}>
+          <button type="button" role="radio" aria-checked={method === 'mailbox'} className={classNames(method === 'mailbox' && 'on')} onClick={() => { setMethod('mailbox'); setError(''); }}>
+            <Mail size={18} /><span><strong>{t('methodMailbox')}</strong><small>{t('methodMailboxHint')}</small></span>
+          </button>
+          <button type="button" role="radio" aria-checked={method === 'resend'} className={classNames(method === 'resend' && 'on')} onClick={() => { setMethod('resend'); setError(''); setAdvanced(false); }}>
+            <Zap size={18} /><span><strong>{t('methodResend')}</strong><small>{t('methodResendHint')}</small></span>
+          </button>
+        </div>
         {!needProject && projects.length > 1 && !lockProject && (
           <label className="field"><span>{t('project')}</span>
             <select value={form.projectId} onChange={(e) => set('projectId', e.target.value)}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
           </label>
         )}
         <label className="field"><span>{t('yourName')}</span><input value={form.displayName} onChange={(e) => set('displayName', e.target.value)} placeholder={t('yourNameExample')} dir="auto" /></label>
-        <label className="field"><span>{t('email')}</span><input type="email" required dir="ltr" autoFocus={!needProject} value={form.email} onChange={(e) => { set('email', e.target.value); setServers(null); }} onBlur={(e) => !servers && detect(e.target.value)} /></label>
-        {!isMicrosoft && (
+        <label className="field"><span>{t('email')}</span><input type="email" required dir="ltr" autoFocus={!needProject} value={form.email} onChange={(e) => { set('email', e.target.value); setServers(null); }} onBlur={(e) => method === 'mailbox' && !servers && detect(e.target.value)} /></label>
+        {method === 'resend' && (<>
+          <label className="field"><span>{t('resendApiKey')}</span><input type="password" required dir="ltr" autoComplete="off" spellCheck={false} value={form.apiKey} onChange={(e) => set('apiKey', e.target.value)} placeholder="re_xxxxxxxx" /></label>
+          <label className="check"><input type="checkbox" checked={form.allAddresses} onChange={(e) => set('allAddresses', e.target.checked)} />{t('resendAllAddresses')}</label>
+          <div className="provider-guide">
+            <strong><KeyRound size={14} /> {t('resendGuideTitle')}</strong>
+            <ol>
+              <li>{t('resendStep1')}</li>
+              <li>{t('resendStep2')}</li>
+              <li>{t('resendStep3')}</li>
+            </ol>
+            <div className="guide-actions">
+              <button type="button" className="button ghost small" onClick={() => api.openHelp('resendKeys')}><ExternalLink size={14} />{t('resendOpenKeys')}</button>
+              <button type="button" className="button ghost small" onClick={() => api.openHelp('resendReceiving')}><ExternalLink size={14} />{t('resendOpenReceiving')}</button>
+            </div>
+          </div>
+        </>)}
+        {method === 'mailbox' && !isMicrosoft && (
           <label className="field"><span>{isGoogle ? t('appPassword') : t('password')}</span><input type="password" required dir="ltr" autoComplete="new-password" value={form.password} onChange={(e) => set('password', isGoogle ? e.target.value.replace(/\s+/g, '') : e.target.value)} placeholder={isGoogle ? 'xxxx xxxx xxxx xxxx' : undefined} /></label>
         )}
-        {!isMicrosoft && <p className="hint"><Lock size={13} />{t('passwordHelp')}</p>}
-        {isMicrosoft && (
+        {method === 'mailbox' && !isMicrosoft && <p className="hint"><Lock size={13} />{t('passwordHelp')}</p>}
+        {method === 'resend' && <p className="hint"><Lock size={13} />{t('resendKeyHelp')}</p>}
+        {method === 'mailbox' && isMicrosoft && (
           <div className="provider-guide">
             <strong>{t('microsoftGuideTitle')}</strong>
             <span>{t('microsoftGuideText')}</span>
           </div>
         )}
-        {isGoogle && (
+        {method === 'mailbox' && isGoogle && (
           <div className="provider-guide">
             <strong>{t('googleGuideTitle')}</strong>
             <ol>
@@ -126,10 +158,10 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
           </div>
         )}
 
-        {!isMicrosoft && <button type="button" className="disclosure" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
+        {method === 'mailbox' && !isMicrosoft && <button type="button" className="disclosure" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
           <ChevronDown size={14} />{t('serverSettings')}{servers && !advanced && <span className="muted">{servers.imapHost}</span>}
         </button>}
-        {advanced && !isMicrosoft && (
+        {method === 'mailbox' && advanced && !isMicrosoft && (
           <div className="server-grid">
             <label className="field"><span>{t('imapHost')}</span><input dir="ltr" value={servers?.imapHost || ''} onChange={(e) => setServer('imapHost', e.target.value)} /></label>
             <label className="field narrow"><span>{t('port')}</span><input dir="ltr" type="number" value={servers?.imapPort || 993} onChange={(e) => setServer('imapPort', Number(e.target.value))} /></label>
@@ -145,7 +177,7 @@ export default function AccountSetup({ t, projects, defaultProjectId, onDone, on
       {error && <p className="form-error" role="alert"><AlertTriangle size={15} />{error}</p>}
       <div className="setup-actions">
         {onCancel && <button type="button" className="button ghost" onClick={onCancel}>{t('cancel')}</button>}
-        <button className="button primary" disabled={Boolean(busy)}>{busy ? <><LoaderCircle className="spin" size={16} />{busy}</> : (isMicrosoft ? t('signInWithMicrosoft') : t('connectAccount'))}</button>
+        <button className="button primary" disabled={Boolean(busy)}>{busy ? <><LoaderCircle className="spin" size={16} />{busy}</> : (method === 'mailbox' && isMicrosoft ? t('signInWithMicrosoft') : t('connectAccount'))}</button>
       </div>
     </form>
   );

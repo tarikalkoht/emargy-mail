@@ -1,6 +1,6 @@
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, Menu, clipboard, nativeImage, Notification, dialog, ipcMain, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, Tray, clipboard, nativeImage, nativeTheme, Notification, dialog, ipcMain, safeStorage, session, shell } = require('electron');
 const { Vault } = require('./vault.cjs');
 const { Database } = require('./db.cjs');
 const { SyncManager } = require('./sync.cjs');
@@ -25,6 +25,14 @@ let outbox;
 let api;
 let updater;
 let importance;
+let tray = null;
+let trayIcon = null;
+let quitting = false;
+let trayHintShown = false;
+const TITLEBAR_HEIGHT = 40;
+const STORE_BUILD = Boolean(process.windowsStore);
+// Started by Windows at sign-in: stay in the tray until the reader opens the window.
+const START_HIDDEN = process.argv.includes('--hidden');
 
 // A separate data folder for demos and automated tests, so real data is never touched.
 if (process.env.EMARGY_DATA_DIR) app.setPath('userData', path.resolve(process.env.EMARGY_DATA_DIR));
@@ -92,9 +100,11 @@ function createWindow() {
     // does a copy run from source.
     ...(process.platform === 'linux' ? { icon: path.join(__dirname, '..', 'build', 'icon.png') }
       : app.isPackaged ? {} : { icon: path.join(__dirname, '..', 'build', 'icon.ico') }),
-    backgroundColor: '#07111f',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0f1214' : '#f3f4f2',
     show: false,
     title: 'Emargy Mail',
+    // The app draws its own top bar; Windows keeps its real minimise/maximise/close buttons.
+    ...(process.platform === 'win32' ? { titleBarStyle: 'hidden', titleBarOverlay: { color: '#00000000', symbolColor: nativeTheme.shouldUseDarkColors ? '#e6e9e7' : '#1b1f22', height: TITLEBAR_HEIGHT } } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -124,9 +134,120 @@ function createWindow() {
 
   if (DEV_URL) mainWindow.loadURL(DEV_URL);
   else mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
-  mainWindow.once('ready-to-show', () => mainWindow.show());
-  // On macOS the app keeps running after the window closes; the Dock icon opens a new one.
+  mainWindow.once('ready-to-show', () => { if (!START_HIDDEN || !tray) mainWindow.show(); });
+  // Closing the window keeps the app running in the notification area (unless turned off).
+  mainWindow.on('close', (event) => {
+    if (quitting || !tray || process.platform === 'darwin' || api?.state().settings.closeToTray === false) return;
+    event.preventDefault();
+    mainWindow.hide();
+    if (!trayHintShown && Notification.isSupported()) {
+      trayHintShown = true;
+      const arabic = db?.getSetting('language', 'en') === 'ar';
+      if (!db?.getSetting('trayHintSeen', false)) {
+        db?.setSetting('trayHintSeen', true);
+        showNotification({
+          title: arabic ? 'إيمارجي ميل ما زال يعمل' : 'Emargy Mail is still running',
+          body: arabic ? 'سيصلك البريد الجديد. افتح البرنامج من أيقونته بجانب الساعة.' : 'New mail keeps arriving. Open it again from its icon next to the clock.',
+          silent: true,
+        });
+      }
+    }
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
+  attachContextMenu(contents);
+}
+
+function showWindow() {
+  if (!mainWindow) { createWindow(); mainWindow.once('ready-to-show', () => mainWindow.show()); return; }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function arabicUi() {
+  return db?.getSetting('language', 'en') === 'ar';
+}
+
+/** Icon next to the clock: open, check mail, write, quit. */
+function createTray() {
+  if (process.platform !== 'win32' && process.platform !== 'linux') return;
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray.ico'));
+  trayIcon = icon.isEmpty() ? nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.png')) : icon;
+  tray = new Tray(trayIcon);
+  tray.setToolTip('Emargy Mail');
+  tray.on('click', () => showWindow());
+  tray.on('double-click', () => showWindow());
+  refreshTrayMenu();
+}
+
+function refreshTrayMenu(unread = 0) {
+  if (!tray) return;
+  const ar = arabicUi();
+  tray.setToolTip(unread ? `Emargy Mail — ${ar ? `${unread} غير مقروءة` : `${unread} unread`}` : 'Emargy Mail');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: ar ? 'فتح إيمارجي ميل' : 'Open Emargy Mail', click: showWindow },
+    { label: ar ? 'رسالة جديدة' : 'New message', click: () => { showWindow(); emit('compose:new', {}); } },
+    { label: ar ? 'التحقق من البريد الآن' : 'Check for new mail', click: () => sync?.syncAll() },
+    { type: 'separator' },
+    { label: ar ? 'إنهاء' : 'Quit', click: () => { quitting = true; app.quit(); } },
+  ]));
+}
+
+/** Right-click: copy, paste, select all, links and images, in the app and inside emails. */
+function attachContextMenu(contents) {
+  contents.on('context-menu', (_event, params) => {
+    const ar = arabicUi();
+    const items = [];
+    const flags = params.editFlags || {};
+    if (params.isEditable) {
+      items.push(
+        { label: ar ? 'تراجع' : 'Undo', role: 'undo', enabled: flags.canUndo },
+        { label: ar ? 'إعادة' : 'Redo', role: 'redo', enabled: flags.canRedo },
+        { type: 'separator' },
+        { label: ar ? 'قص' : 'Cut', role: 'cut', enabled: flags.canCut },
+        { label: ar ? 'نسخ' : 'Copy', role: 'copy', enabled: flags.canCopy },
+        { label: ar ? 'لصق' : 'Paste', role: 'paste', enabled: flags.canPaste },
+        { label: ar ? 'لصق كنص فقط' : 'Paste as plain text', role: 'pasteAndMatchStyle', enabled: flags.canPaste },
+        { type: 'separator' },
+        { label: ar ? 'تحديد الكل' : 'Select all', role: 'selectAll' },
+      );
+    } else if (params.selectionText?.trim()) {
+      // Text selected inside an email frame is copied as is (the frame may not have focus).
+      items.push({ label: ar ? 'نسخ' : 'Copy', click: () => clipboard.writeText(params.selectionText) });
+    }
+    if (params.linkURL && /^(https?|mailto):/i.test(params.linkURL)) {
+      if (items.length) items.push({ type: 'separator' });
+      const isMail = /^mailto:/i.test(params.linkURL);
+      items.push(
+        { label: ar ? (isMail ? 'نسخ العنوان' : 'نسخ الرابط') : (isMail ? 'Copy address' : 'Copy link'), click: () => clipboard.writeText(isMail ? decodeURIComponent(params.linkURL.replace(/^mailto:/i, '').split('?')[0]) : params.linkURL) },
+        ...(isMail ? [] : [{ label: ar ? 'فتح الرابط في المتصفح' : 'Open link in browser', click: () => openExternalSafely(params.linkURL) }]),
+      );
+    }
+    if (params.mediaType === 'image' && params.hasImageContents) {
+      if (items.length) items.push({ type: 'separator' });
+      items.push({ label: ar ? 'نسخ الصورة' : 'Copy image', click: () => contents.copyImageAt(params.x, params.y) });
+    }
+    if (!params.isEditable) {
+      if (items.length) items.push({ type: 'separator' });
+      items.push({ label: ar ? 'تحديد الكل' : 'Select all', click: () => (params.frame && params.frame !== contents.mainFrame ? params.frame.executeJavaScript('document.execCommand("selectAll")').catch(() => {}) : contents.selectAll()) });
+    }
+    if (!app.isPackaged) items.push({ type: 'separator' }, { label: 'Inspect', click: () => contents.inspectElement(params.x, params.y) });
+    Menu.buildFromTemplate(items).popup({ window: mainWindow || undefined });
+  });
+}
+
+/** Keep the Windows caption buttons readable on the app's own colours. */
+function setTitleBarColors({ dark } = {}) {
+  if (!mainWindow || process.platform !== 'win32') return false;
+  try {
+    mainWindow.setTitleBarOverlay({ color: '#00000000', symbolColor: dark ? '#e6e9e7' : '#1b1f22', height: TITLEBAR_HEIGHT });
+  } catch { /* older Windows: nothing to do */ }
+  return true;
+}
+
+function applyLoginItem(enabled) {
+  if (STORE_BUILD || !app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) return;
+  app.setLoginItemSettings({ openAtLogin: Boolean(enabled), args: ['--hidden'] });
 }
 
 /** macOS needs an application menu, or Copy, Paste and Quit stop working. */
@@ -180,6 +301,7 @@ function registerHandlers() {
   handle('settings:language', (language) => api.setLanguage(language));
   handle('settings:update', (changes) => {
     const result = api.updateSettings(changes);
+    if (changes && 'startAtLogin' in changes) applyLoginItem(result.settings.startAtLogin);
     if (changes?.aiAlerts) importance.runOnce().catch(() => {});
     if (changes && 'autoUpdate' in changes) {
       if (result.settings.autoUpdate) updater.start(1000);
@@ -201,6 +323,8 @@ function registerHandlers() {
       googleAppPassword: 'https://myaccount.google.com/apppasswords',
       google2sv: 'https://myaccount.google.com/signinoptions/twosv',
       releases: 'https://github.com/tarikalkoht/emargy-mail/releases',
+      resendKeys: 'https://resend.com/api-keys',
+      resendReceiving: 'https://resend.com/docs/dashboard/receiving/introduction',
     };
     if (!pages[key]) throw new Error('Unknown page.');
     return shell.openExternal(pages[key]);
@@ -213,10 +337,18 @@ function registerHandlers() {
   handle('scene:get', () => api.sceneImage());
   handle('scene:set', (dataUrl) => api.setSceneImage(dataUrl ?? null));
   // Unread count on the taskbar button, drawn by the interface as a small PNG.
-  handle('badge:set', ({ image, label } = {}) => {
-    if (image && (!/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(String(image)) || image.length > 60_000)) throw new Error('Invalid badge.');
+  handle('badge:set', ({ image, label, trayImage } = {}) => {
+    const png = (value) => /^data:image\/png;base64,[a-z0-9+/=]+$/i.test(String(value)) && value.length <= 60_000;
+    if (image && !png(image)) throw new Error('Invalid badge.');
+    if (tray) {
+      tray.setImage(trayImage && png(trayImage) ? nativeImage.createFromDataURL(trayImage) : trayIcon);
+      refreshTrayMenu(Number.parseInt(label, 10) || 0);
+    }
     return setUnreadBadge(image, image ? label : '');
   });
+  handle('window:theme', (theme) => setTitleBarColors(theme));
+  handle('app:info', () => ({ platform: process.platform, store: STORE_BUILD, portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE), version: app.getVersion(), titleBar: process.platform === 'win32' ? TITLEBAR_HEIGHT : 0 }));
+  handle('app:quit', () => { quitting = true; app.quit(); return true; });
   handle('clipboard:write', (value) => { clipboard.writeText(String(value ?? '').slice(0, 200_000)); return true; });
   handle('project:create', (input) => api.createProject(input));
   handle('project:delete', (id) => api.deleteProject(id));
@@ -251,6 +383,9 @@ function registerHandlers() {
   handle('messages:archive', (ids) => api.archive(ids));
   handle('messages:trash', (ids) => api.trash(ids));
   handle('messages:move', (ids, folderId) => api.moveTo(ids, folderId));
+  handle('messages:notSpam', (ids) => api.markNotSpam(ids));
+  handle('messages:spam', (ids) => api.markSpam(ids));
+  handle('messages:category', (ids, category) => api.setCategory(ids, category));
   handle('images:trust', (address) => api.trustImages(address));
   handle('contacts:search', (query) => api.contacts(query));
   handle('attachments:forward', (messageId) => api.forwardAttachments(messageId));
@@ -319,6 +454,8 @@ function showNotification({ title, body, silent, onClick }) {
 function notifyNewMail({ newInbox = [] }) {
   if (!newInbox.length || !Notification.isSupported()) return;
   const prefs = preferences();
+  if (prefs.notifyPrimaryOnly && prefs.inboxTabs !== false) newInbox = newInbox.filter((m) => !m.category || m.category === 'primary' || m.important);
+  if (!newInbox.length) return;
   const arabic = db.getSetting('language', 'en') === 'ar';
   const projects = new Map(db.listProjects().map((p) => [p.id, p.name]));
   for (const group of selectNotifications(newInbox, prefs)) {
@@ -382,10 +519,7 @@ function openStorage() {
 }
 
 app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-  }
+  if (mainWindow || db) showWindow();
 });
 
 app.whenReady().then(() => {
@@ -427,7 +561,9 @@ app.whenReady().then(() => {
     notify: notifyImportant,
   });
   registerHandlers();
+  createTray();
   createWindow();
+  applyLoginItem(api.state().settings.startAtLogin);
   setTimeout(() => importance.poke(), 15_000);
   sync.start();
   outbox.start();
@@ -438,11 +574,12 @@ app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event) => event.preventDefault());
 });
 
-let quitting = false;
+let stopping = false;
 app.on('before-quit', (event) => {
-  if (quitting || !sync) return;
-  event.preventDefault();
   quitting = true;
+  if (stopping || !sync) return;
+  event.preventDefault();
+  stopping = true;
   outbox?.stop();
   sync.stop().finally(() => {
     db?.close();
@@ -455,5 +592,5 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
-  if (!mainWindow && db) createWindow();
+  if (db) showWindow();
 });
