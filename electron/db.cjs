@@ -7,6 +7,7 @@ const { CATEGORIES, categorize } = require('./categorize.cjs');
 
 const SCHEMA_VERSION = 2;
 const AUDIT_LIMIT = 1000;
+const DEFAULT_BODY_DAYS = 90;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -67,8 +68,34 @@ CREATE TABLE IF NOT EXISTS sender_rules (fingerprint TEXT PRIMARY KEY, category 
 CREATE TABLE IF NOT EXISTS remote_gone (account_id TEXT NOT NULL, remote_id TEXT NOT NULL, PRIMARY KEY (account_id, remote_id));
 `;
 
+/**
+ * Fold text so a search finds what the reader meant, not only the exact letters typed:
+ * case, Arabic diacritics and tatweel are ignored, alef/hamza forms, taa marbuta and
+ * alef maqsura match their plain letters, and Arabic-Indic digits match 0-9.
+ */
+function normalizeSearch(value = '') {
+  return String(value)
+    .toLowerCase()
+    .replace(/[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed\u0640]/g, '')
+    .replace(/[\u0622\u0623\u0625\u0671]/g, '\u0627')
+    .replace(/\u0629/g, '\u0647')
+    .replace(/\u0649/g, '\u064a')
+    .replace(/\u0624/g, '\u0648')
+    .replace(/\u0626/g, '\u064a')
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Every word of the query must appear somewhere (in any order). */
+function searchMatcher(query) {
+  const words = normalizeSearch(query).split(' ').filter(Boolean);
+  return words.length ? (haystack) => words.every((word) => haystack.includes(word)) : null;
+}
+
 function searchText(header) {
-  return [header.subject, header.from, header.to, header.cc, header.preview].filter(Boolean).join(' ').toLowerCase();
+  return normalizeSearch([header.subject, header.from, header.to, header.cc, header.preview].filter(Boolean).join(' '));
 }
 
 /** Split an address list on commas/semicolons that are outside quotes and <…>. */
@@ -128,6 +155,7 @@ class Database {
     if (!columns('folders').has('floor_uid')) this.db.exec('ALTER TABLE folders ADD COLUMN floor_uid INTEGER NOT NULL DEFAULT 0');
     if (!columns('folders').has('older_done')) this.db.exec('ALTER TABLE folders ADD COLUMN older_done INTEGER NOT NULL DEFAULT 0');
     if (!columns('accounts').has('sort_order')) this.db.exec('ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+    if (!columns('projects').has('sort_order')) this.db.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
     // Spam / trust verdict from the server's own filter and the sender authentication results.
     if (!columns('messages').has('trust')) this.db.exec("ALTER TABLE messages ADD COLUMN trust TEXT NOT NULL DEFAULT ''");
     if (!columns('messages').has('ai_important')) this.db.exec('ALTER TABLE messages ADD COLUMN ai_important INTEGER NOT NULL DEFAULT 0');
@@ -191,14 +219,24 @@ class Database {
 
   // Projects -----------------------------------------------------------------
   listProjects() {
-    return this.db.prepare('SELECT id, created_at, data FROM projects ORDER BY created_at').all()
+    return this.db.prepare('SELECT id, created_at, data FROM projects ORDER BY sort_order, created_at').all()
       .map((row) => ({ id: row.id, createdAt: row.created_at, ...this.vault.decryptJson(row.data) }));
   }
 
   createProject({ name, color }, id = this.id(), createdAt = Date.now()) {
-    this.db.prepare('INSERT INTO projects (id, created_at, data) VALUES (?, ?, ?)')
-      .run(id, createdAt, this.vault.encryptJson({ name, color }));
+    const next = this.db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM projects').get().n;
+    this.db.prepare('INSERT INTO projects (id, created_at, data, sort_order) VALUES (?, ?, ?, ?)')
+      .run(id, createdAt, this.vault.encryptJson({ name, color }), next);
     return id;
+  }
+
+  /** Save the order the reader arranged; ids not listed keep their place after the listed ones. */
+  reorderProjects(ids) {
+    const known = new Set(this.db.prepare('SELECT id FROM projects').all().map((r) => r.id));
+    const ordered = [...new Set(ids.filter((id) => known.has(id)))];
+    const rest = this.listProjects().map((p) => p.id).filter((id) => !ordered.includes(id));
+    const update = this.db.prepare('UPDATE projects SET sort_order = ? WHERE id = ?');
+    this.transaction(() => [...ordered, ...rest].forEach((id, index) => update.run(index + 1, id)));
   }
 
   deleteProject(id) {
@@ -663,7 +701,65 @@ class Database {
   }
 
   messagesToPrefetch(accountId, limit) {
-    return this.sorted.filter((m) => m.accountId === accountId && !m.cached && m.size < 5 * 1024 * 1024).slice(0, limit);
+    // Never download again what the retention policy just freed: only recent mail is kept offline.
+    const since = this.bodyCutoff();
+    return this.sorted.filter((m) => m.accountId === accountId && !m.cached && m.size < 5 * 1024 * 1024 && m.dateValue >= since).slice(0, limit);
+  }
+
+  // Storage ----------------------------------------------------------------------
+  /** Oldest date whose full message is kept on this device (0 = keep everything). */
+  bodyCutoff(now = Date.now()) {
+    const days = this.getSetting('preferences', {})?.bodyCacheDays ?? DEFAULT_BODY_DAYS;
+    return days > 0 ? now - days * 86_400_000 : 0;
+  }
+
+  /**
+   * Drop the full copy (body and attachments) of mail older than the retention period.
+   * The headers stay, so the message still lists and searches; opening it fetches it again.
+   * Starred mail and accounts whose server cannot hand the message back are left alone.
+   */
+  freeOldBodies(accountIds, now = Date.now()) {
+    const cutoff = this.bodyCutoff(now);
+    if (!cutoff || !accountIds.length) return 0;
+    const marks = accountIds.map(() => '?').join(',');
+    const where = `raw IS NOT NULL AND date < ? AND flagged = 0 AND account_id IN (${marks})`;
+    const ids = this.db.prepare(`SELECT id FROM messages WHERE ${where}`).all(cutoff, ...accountIds).map((r) => r.id);
+    if (!ids.length) return 0;
+    this.db.prepare(`UPDATE messages SET raw = NULL WHERE ${where}`).run(cutoff, ...accountIds);
+    for (const id of ids) {
+      const header = this.headers.get(id);
+      if (header) header.cached = false;
+    }
+    return ids.length;
+  }
+
+  storageInfo() {
+    const pragma = (name) => Number(Object.values(this.db.prepare(`PRAGMA ${name}`).get())[0]) || 0;
+    const pageSize = pragma('page_size');
+    const bodies = this.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(raw)), 0) AS bytes FROM messages WHERE raw IS NOT NULL').get();
+    return {
+      fileBytes: pragma('page_count') * pageSize,
+      freeBytes: pragma('freelist_count') * pageSize,
+      bodyBytes: Number(bodies.bytes),
+      bodies: Number(bodies.n),
+      messages: this.headers.size,
+    };
+  }
+
+  /**
+   * Give freed space back to the disk. The first time this rebuilds the file once
+   * (VACUUM) and turns on incremental vacuum, so later calls are quick.
+   */
+  compact({ full = false } = {}) {
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const incremental = Number(Object.values(this.db.prepare('PRAGMA auto_vacuum').get())[0]) === 2;
+    if (incremental && !full) {
+      this.db.exec('PRAGMA incremental_vacuum');
+    } else if (full) {
+      if (!incremental) this.db.exec('PRAGMA auto_vacuum = INCREMENTAL');
+      this.db.exec('VACUUM');
+    }
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   }
 
   /**
@@ -673,6 +769,7 @@ class Database {
   listMessages({ projectId = 'all', accountId = 'all', folderId = null, folderRole = 'inbox', filter = 'all', query = '', offset = 0, limit = 200, threaded = true, category = '' } = {}) {
     const needle = String(query || '').trim().toLowerCase();
     const serverHits = needle ? this.searchHits?.get(needle) : null;
+    const wordsMatch = searchMatcher(needle);
     // Tabs only make sense for an inbox that is not being searched.
     const folderIsInbox = folderId ? this.getFolder(folderId)?.role === 'inbox' : folderRole === 'inbox';
     const tabbed = Boolean(folderIsInbox && !needle && CATEGORIES.includes(category));
@@ -687,7 +784,7 @@ class Database {
       if (filter === 'spam' && !['spam', 'suspicious'].includes(m.trust)) return false;
       if (filter === 'flagged' && !m.flagged) return false;
       if (filter === 'attachments' && !m.hasAttachments) return false;
-      return !needle || m.search.includes(needle) || Boolean(serverHits?.has(m.id));
+      return !wordsMatch || wordsMatch(m.search) || Boolean(serverHits?.has(m.id));
     });
     let matches = all;
     if (tabbed) {
@@ -747,6 +844,7 @@ class Database {
   searchContacts(query, limit = 8) {
     const needle = String(query || '').trim().toLowerCase();
     if (!needle) return [];
+    const folded = normalizeSearch(needle);
     const contacts = new Map();
     for (const message of this.sorted) {
       for (const field of [message.from, message.to, message.cc]) {
@@ -759,7 +857,7 @@ class Database {
       }
     }
     return [...contacts.values()]
-      .filter((c) => c.address.includes(needle) || c.name.toLowerCase().includes(needle))
+      .filter((c) => c.address.includes(needle) || normalizeSearch(c.name).includes(folded))
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map(({ address, name }) => ({ address, name }));
@@ -876,4 +974,4 @@ class Database {
   }
 }
 
-module.exports = { Database, parseAddressList };
+module.exports = { Database, parseAddressList, normalizeSearch };

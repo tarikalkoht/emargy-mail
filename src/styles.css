@@ -185,6 +185,15 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .account-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: none; color: var(--ink-2); text-align: start; padding: 4px 2px; }
 .account-name > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.account-avatar { flex: none; display: inline-grid; place-items: center; border-radius: 50%; object-fit: cover; font-weight: 600; line-height: 1; }
+.account-avatar.letter { color: hsl(var(--hue) 45% 30%); background: hsl(var(--hue) 45% 90%); }
+:root[data-theme='dark'] .account-avatar.letter { color: hsl(var(--hue) 50% 82%); background: hsl(var(--hue) 25% 24%); }
+.avatar-status { position: relative; flex: none; display: inline-flex; }
+.avatar-status .status-dot { position: absolute; inset-block-end: -1px; inset-inline-end: -1px; width: 8px; height: 8px; box-shadow: 0 0 0 2px var(--bg); }
+.avatar.has-picture { object-fit: cover; padding: 0; }
+.picture-field { display: flex; align-items: center; gap: 12px; }
+.picture-field .account-avatar { box-shadow: 0 0 0 1px var(--line); }
+.picture-field .picture-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .status-dot.s-syncing, .status-dot.s-connecting { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 .status-dot.s-error, .status-dot.s-offline { background: var(--danger); }
 @keyframes pulse { 50% { opacity: 0.35; } }
@@ -562,6 +571,8 @@ button.page-row-main:hover { background: var(--surface-2); }
 .tree-account[draggable='true'] { cursor: grab; }
 .tree-account.dragging { opacity: .45; }
 .tree-account.drop-target { box-shadow: inset 0 2px 0 var(--accent); border-radius: 4px; }
+.tree-project.dragging { opacity: .45; }
+.tree-project.drop-target > .project-tab { box-shadow: inset 0 2px 0 var(--accent); }
 
 /* Selection */
 .select-all { display: grid; place-items: center; width: 32px; height: 32px; }

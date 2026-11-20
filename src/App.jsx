@@ -564,6 +564,7 @@ export default function App() {
         onAddProject={() => setView('settings-projects')}
         onAddAccount={(projectId) => setAddingTo(projectId)}
         onReorderAccounts={async (ids) => { const next = await guard(() => api.reorderAccounts(ids)); if (next) setState(next); }}
+        onReorderProjects={async (ids) => { const next = await guard(() => api.reorderProjects(ids)); if (next) setState(next); }}
         onDropMessages={dropMessages}
         update={update}
       />

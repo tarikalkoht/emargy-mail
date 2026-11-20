@@ -1,6 +1,6 @@
 {
   "name": "emargy-mail",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Open-source, local-first email client for multiple projects and accounts.",
   "main": "electron/main.cjs",
   "author": {
@@ -26,6 +26,12 @@
     "appId": "com.emargy.mail",
     "productName": "Emargy Mail",
     "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US",
+      "en",
+      "ar"
+    ],
     "directories": {
       "output": "release"
     },
@@ -33,7 +39,10 @@
       "dist/**/*",
       "electron/**/*",
       "build/icon.png",
-      "package.json"
+      "package.json",
+      "!**/node_modules/**/{README,README.*,readme.*,CHANGELOG*,changelog*,HISTORY*,AUTHORS*,CONTRIBUTING*,SECURITY*}",
+      "!**/node_modules/**/*.{md,markdown,ts,mts,cts,map,flow,tsbuildinfo}",
+      "!**/node_modules/**/{test,tests,__tests__,example,examples,docs,doc,.github,coverage,benchmark,benchmarks}/**"
     ],
     "win": {
       "target": [

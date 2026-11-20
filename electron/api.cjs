@@ -30,6 +30,7 @@ const DEFAULT_SETTINGS = {
   quietHours: { enabled: false, from: '22:00', to: '07:00' },
   mutedProjects: [],
   emptyScene: 'trays',
+  bodyCacheDays: 90,
 };
 const SETTING_RULES = {
   theme: (v) => ['system', 'light', 'dark'].includes(v),
@@ -52,6 +53,7 @@ const SETTING_RULES = {
   quietHours: (v) => v && typeof v.enabled === 'boolean' && /^\d{2}:\d{2}$/.test(v.from) && /^\d{2}:\d{2}$/.test(v.to),
   mutedProjects: (v) => Array.isArray(v) && v.length < 200 && v.every((id) => typeof id === 'string' && id.length < 80),
   emptyScene: (v) => ['trays', 'dawn', 'night', 'plain', 'custom'].includes(v),
+  bodyCacheDays: (v) => [0, 30, 90, 365].includes(v),
 };
 
 function text(value, max = 500) {
@@ -74,6 +76,14 @@ function emailAddress(value) {
   const email = text(value, 320);
   if (!/^[^\s@]+@[^\s@]+$/.test(email)) throw new Error('Email address is not valid.');
   return email;
+}
+
+/** An account picture: a small image the app already resized, or null to remove it. */
+function accountPicture(value) {
+  if (value === null || value === '') return null;
+  const dataUrl = String(value);
+  if (!/^data:image\/(png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(dataUrl) || dataUrl.length > 200_000) throw new Error('Choose a PNG, JPG or WebP picture.');
+  return dataUrl;
 }
 
 function ids(value) {
@@ -318,6 +328,7 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       for (const key of ['signatureNew', 'signatureReply']) {
         if (changes[key] !== undefined) next[key] = changes[key] ? text(changes[key], 64) : null;
       }
+      if (changes.picture !== undefined) next.picture = accountPicture(changes.picture);
       if (changes.allAddresses !== undefined && account.authType === 'resend') next.allAddresses = Boolean(changes.allAddresses);
       const reconnect = Boolean(changes.password);
       if (changes.password && account.authType === 'resend') {
@@ -395,6 +406,44 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       db.rememberSearch(query, hits.flat());
       const after = db.listMessages({ folderRole: 'any', query, threaded: false, limit: 1e6 }).total;
       return { found: hits.flat().length, added: Math.max(0, after - before) };
+    },
+
+    /** How much room the local mail copy takes. */
+    storage() {
+      return db.storageInfo();
+    },
+
+    /**
+     * Drop full copies of mail older than the retention period (they are fetched again on open).
+     * Resend mail is kept: the provider may not hand an old message back.
+     */
+    freeOldBodies() {
+      const accountIds = db.listAccounts().filter((a) => a.authType !== 'resend').map((a) => a.id);
+      return db.freeOldBodies(accountIds);
+    },
+
+    /** Routine upkeep (at start and once a day): quick, never rebuilds the whole file. */
+    maintainStorage() {
+      const freed = api.freeOldBodies();
+      db.compact();
+      if (freed) db.audit('storage.trimmed', { messages: freed });
+      return freed;
+    },
+
+    /** The reader asked for room back now: trim, then rebuild the file. */
+    freeSpace() {
+      const before = db.storageInfo().fileBytes;
+      const freed = api.freeOldBodies();
+      db.compact({ full: true });
+      const after = db.storageInfo();
+      db.audit('storage.compacted', { messages: freed, before, after: after.fileBytes });
+      return { freed, saved: Math.max(0, before - after.fileBytes), storage: after };
+    },
+
+    reorderProjects(ids) {
+      if (!Array.isArray(ids)) throw new Error('Invalid order.');
+      db.reorderProjects(ids.slice(0, 500).map((id) => text(id, 64)));
+      return api.state();
     },
 
     reorderAccounts(ids) {

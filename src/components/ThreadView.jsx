@@ -27,11 +27,13 @@ function MessageFrame({ html, title }) {
   return <iframe ref={ref} className="message-frame" title={title} style={{ height }} sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={html} />;
 }
 
-function Avatar({ value, size = 36 }) {
+function Avatar({ value, size = 36, pictures }) {
+  const picture = pictures?.get(parseAddresses(value)[0]?.address?.toLowerCase());
+  if (picture) return <img className="avatar has-picture" src={picture} width={size} height={size} alt="" aria-hidden="true" />;
   return <span className="avatar" style={{ '--hue': senderHue(value), width: size, height: size }} aria-hidden="true">{initial(value)}</span>;
 }
 
-function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate, onMoveToJunk, onNotSpam }) {
+function ThreadMessage({ message, pictures, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate, onMoveToJunk, onNotSpam }) {
   const [showOnce, setShowOnce] = useState(false);
   const [details, setDetails] = useState(false);
   const content = message.content;
@@ -42,7 +44,7 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
   if (!expanded) {
     return (
       <button className="thread-message collapsed" onClick={onToggle}>
-        <Avatar value={content.from} size={30} />
+        <Avatar value={content.from} size={30} pictures={pictures} />
         <strong dir="auto">{displayName(content.from)}</strong>
         <span className="collapsed-preview" dir="auto">{content.preview}</span>
         <time>{formatListDate(content.date, language)}</time>
@@ -52,7 +54,7 @@ function ThreadMessage({ message, t, language, expanded, onToggle, onTrustSender
   return (
     <article className="thread-message">
       <header className="message-head">
-        <Avatar value={content.from} />
+        <Avatar value={content.from} pictures={pictures} />
         <div className="message-who">
           <button className="sender-line" onClick={onToggle}>
             <strong dir="auto">{sender?.name || sender?.address || content.from}</strong>
@@ -160,6 +162,8 @@ export default function ThreadView({ t, language, thread, loading, project, acco
   const [expanded, setExpanded] = useState(new Set());
   const [moveAt, setMoveAt] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
+  // Mail you sent shows the sending account's own picture.
+  const pictures = useMemo(() => new Map((state?.accounts || []).filter((a) => a.picture).map((a) => [String(a.email).toLowerCase(), a.picture])), [state?.accounts]);
   const [job, setJob] = useState(null);
   const jobId = useRef(0);
   const bottomRef = useRef(null);
@@ -256,6 +260,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
             <ThreadMessage
               key={message.id}
               message={message}
+              pictures={pictures}
               t={t}
               language={language}
               expanded={expanded.has(message.id)}

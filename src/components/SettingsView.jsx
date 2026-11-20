@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, Check, ChevronDown, ImagePlus, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, ChevronDown, HardDrive, ImagePlus, LoaderCircle, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import { SceneArt } from './EmptyScene';
 import RichEditor from './RichEditor';
 import { ColorPicker, PROJECT_COLORS } from './AccountSetup';
-import { classNames } from '../lib/format';
+import AccountAvatar from './AccountAvatar';
+import { classNames, formatSize, squarePicture } from '../lib/format';
 
 const api = window.emargy;
 const errorText = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -177,7 +178,42 @@ function Appearance({ t, state, setState, onToast, onSceneChanged }) {
   );
 }
 
-function General({ t, state, setState, language }) {
+function StorageSetting({ t, days, onDays, onToast }) {
+  const [info, setInfo] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.storage().then(setInfo).catch(() => {}); }, [days]);
+  const free = async () => {
+    setBusy(true);
+    try {
+      const result = await api.freeSpace();
+      setInfo(result.storage);
+      onToast(t('storageFreed', { size: formatSize(result.saved) }));
+    } catch (error) {
+      onToast(errorText(error), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div className="setting-row">
+        <span><strong>{t('keepBodies')}</strong><small>{t('keepBodiesHint')}</small></span>
+        <select value={days} onChange={(e) => onDays(Number(e.target.value))}>
+          {[30, 90, 365, 0].map((n) => <option key={n} value={n}>{n ? t('keepDays', { n }) : t('keepForever')}</option>)}
+        </select>
+      </div>
+      <div className="setting-row">
+        <span>
+          <strong>{t('storageUsed', { size: info ? formatSize(info.fileBytes) : '…' })}</strong>
+          <small>{info ? t('storageDetail', { bodies: formatSize(info.bodyBytes), messages: info.messages.toLocaleString() }) : ''}</small>
+        </span>
+        <button className="button ghost" onClick={free} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <HardDrive size={15} />}{t('freeSpace')}</button>
+      </div>
+    </>
+  );
+}
+
+function General({ t, state, setState, language, onToast }) {
   const s = state.settings;
   const update = async (changes) => setState(await api.updateSettings(changes));
   const [info, setInfo] = useState(null);
@@ -198,6 +234,7 @@ function General({ t, state, setState, language }) {
       {info && !info.store && !info.portable && <Toggle label={t('startAtLogin')} hint={t('startAtLoginHint')} checked={Boolean(s.startAtLogin)} onChange={(v) => update({ startAtLogin: v })} />}
       <AiSetting t={t} value={s.aiProvider || 'auto'} onChange={(v) => update({ aiProvider: v })} />
       <UpdateSetting t={t} enabled={s.autoUpdate !== false} onChange={(v) => update({ autoUpdate: v })} />
+      <StorageSetting t={t} days={s.bodyCacheDays ?? 90} onDays={(v) => update({ bodyCacheDays: v })} onToast={onToast} />
     </div>
   );
 }
@@ -222,6 +259,21 @@ function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove
       setBusy(false);
     }
   };
+  const setPicture = async (picture) => {
+    try {
+      setState(await api.updateAccount(account.id, { picture }));
+    } catch (error) {
+      onToast(errorText(error), 'error');
+    }
+  };
+  const pickPicture = async () => {
+    try {
+      const dataUrl = await api.pickImage();
+      if (dataUrl) await setPicture(await squarePicture(dataUrl));
+    } catch (error) {
+      onToast(errorText(error), 'error');
+    }
+  };
   const remove = async () => {
     if (!window.confirm(t('deleteAccountConfirm'))) return;
     setState(await api.deleteAccount(account.id));
@@ -230,7 +282,7 @@ function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove
     <article className={classNames('settings-card', 'collapsible', open && 'open')}>
       <header>
         <button className="card-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
-          <span className={classNames('status-dot', `s-${status}`)} />
+          <span className="avatar-status"><AccountAvatar account={account} size={34} /><span className={classNames('status-dot', `s-${status}`)} /></span>
           <span className="card-title"><strong dir="auto">{account.displayName || account.email}</strong><small>{account.email} · {resend ? (account.resendMode === 'send' ? t('resendSendOnly') : 'Resend API') : account.imapHost}</small></span>
           {project && <span className="project-tag" style={{ '--project': project.color }}>{project.name}</span>}
           <ChevronDown size={16} className="card-chevron" />
@@ -242,6 +294,16 @@ function AccountCard({ t, account, state, setState, onToast, defaultOpen, onMove
       {account.sync?.error && <p className="form-error">{account.sync.error === 'MICROSOFT_SIGN_IN_AGAIN' ? t('microsoftSignInAgain') : account.sync.error}</p>}
       {open && (<>
       <div className="card-grid">
+        <div className="field wide">
+          <span>{t('accountPicture')}</span>
+          <div className="picture-field">
+            <AccountAvatar account={account} size={48} />
+            <div className="picture-actions">
+              <button type="button" className="button ghost small" onClick={pickPicture}><ImagePlus size={14} />{account.picture ? t('changePicture') : t('choosePicture')}</button>
+              {account.picture && <button type="button" className="button ghost small danger-text" onClick={() => setPicture(null)}><Trash2 size={14} />{t('removePicture')}</button>}
+            </div>
+          </div>
+        </div>
         <label className="field"><span>{t('yourName')}</span><input dir="auto" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} /></label>
         <label className="field"><span>{t('project')}</span><select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>{state.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className="field"><span>{t('signatureNew')}</span><select value={form.signatureNew} onChange={(e) => setForm({ ...form, signatureNew: e.target.value })}><option value="">{t('noSignature')}</option>{state.signatures.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
@@ -313,15 +375,28 @@ function Projects({ t, state, setState, onToast }) {
       onToast(errorText(error), 'error');
     }
   };
+  const move = async (index, step) => {
+    const ids = state.projects.map((p) => p.id);
+    if (!ids[index + step]) return;
+    [ids[index], ids[index + step]] = [ids[index + step], ids[index]];
+    try {
+      setState(await api.reorderProjects(ids));
+    } catch (error) {
+      onToast(errorText(error), 'error');
+    }
+  };
   return (
     <div className="settings-section">
-      {state.projects.map((p) => {
+      <p className="section-hint">{t('projectsOrderHint')}</p>
+      {state.projects.map((p, index) => {
         const count = state.accounts.filter((a) => a.projectId === p.id).length;
         return (
           <div key={p.id} className="project-line" style={{ '--project': p.color }}>
             <span className="project-swatch" />
             <strong dir="auto">{p.name}</strong>
             <small>{t('accountsCount', { n: count })}</small>
+            <button className="icon-button quiet" disabled={index === 0} onClick={() => move(index, -1)} title={t('moveUp')} aria-label={t('moveUp')}><ArrowUp size={15} /></button>
+            <button className="icon-button quiet" disabled={index === state.projects.length - 1} onClick={() => move(index, 1)} title={t('moveDown')} aria-label={t('moveDown')}><ArrowDown size={15} /></button>
             <button className="icon-button quiet" disabled={count > 0} title={count ? t('deleteProjectBlocked') : t('delete')} onClick={async () => setState(await api.deleteProject(p.id))}><Trash2 size={15} /></button>
           </div>
         );
@@ -401,7 +476,7 @@ export default function SettingsView({ t, state, setState, language, onToast, on
           {TABS.map((key) => <button key={key} role="tab" aria-selected={tab === key} className={classNames(tab === key && 'on')} onClick={() => setTab(key)}>{t(`tab_${key}`)}</button>)}
         </div>
         <div className="settings-panel">
-          {tab === 'general' && <General t={t} state={state} setState={setState} language={language} />}
+          {tab === 'general' && <General t={t} state={state} setState={setState} language={language} onToast={onToast} />}
           {tab === 'notifications' && <Notifications t={t} state={state} setState={setState} />}
           {tab === 'appearance' && <Appearance t={t} state={state} setState={setState} onToast={onToast} onSceneChanged={onSceneChanged} />}
           {tab === 'accounts' && <AccountsByProject t={t} state={state} setState={setState} onToast={onToast} onAddAccount={onAddAccount} />}

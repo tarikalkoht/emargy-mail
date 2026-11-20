@@ -133,6 +133,28 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     expect(() => api.reorderAccounts('nope')).toThrow(/Invalid order/);
   });
 
+  it('keeps the project order the reader chooses, and puts new projects last', () => {
+    api.createProject({ name: 'Second project', color: '#2d8cff' });
+    const ids = api.state().projects.map((p) => p.id);
+    expect(ids.length).toBeGreaterThan(1);
+    expect(api.reorderProjects([...ids].reverse()).projects.map((p) => p.id)).toEqual([...ids].reverse());
+    const third = api.createProject({ name: 'Third project', color: '#2d8cff' }).projects;
+    expect(third[third.length - 1].name).toBe('Third project');
+    expect(() => api.reorderProjects('nope')).toThrow(/Invalid order/);
+    for (const p of api.state().projects.filter((p) => /^(Second|Third) project$/.test(p.name))) api.deleteProject(p.id);
+  });
+
+  it('keeps an account picture encrypted and accepts only small images', async () => {
+    const accountId = api.state().accounts[0].id;
+    const picture = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    expect((await api.updateAccount(accountId, { picture })).accounts[0].picture).toBe(picture);
+    const stored = JSON.stringify(db.db.prepare('SELECT data FROM accounts').all());
+    expect(stored).not.toContain('iVBORw0KGgo');
+    await expect(api.updateAccount(accountId, { picture: 'data:image/svg+xml;base64,PHN2Zz4=' })).rejects.toThrow(/PNG/);
+    await expect(api.updateAccount(accountId, { picture: `data:image/png;base64,${'A'.repeat(300_000)}` })).rejects.toThrow(/PNG/);
+    expect((await api.updateAccount(accountId, { picture: null })).accounts[0].picture).toBe(null);
+  });
+
   it('never writes mail content, addresses or passwords to disk in clear text', async () => {
     db.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     const files = fs.readdirSync(dir).map((file) => fs.readFileSync(path.join(dir, file)));
@@ -254,6 +276,50 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     api.trustImages('client@acme.test');
     expect(db.isTrustedImageSender('CLIENT@acme.test')).toBe(true);
     expect(db.isTrustedImageSender('other@acme.test')).toBe(false);
+  });
+
+  it('goes back to watching the inbox after working in another folder', async () => {
+    const sent = api.listMessages({ folderRole: 'sent' }).messages[0];
+    expect(sent).toBeTruthy();
+    await api.setFlagged([sent.id], true); // selects Sent on the account's connection
+    await api.setFlagged([sent.id], false);
+    const before = events.filter((e) => e.channel === 'mail:changed').length;
+    const client = new ImapFlow({ host: '127.0.0.1', port: servers.imapPort, secure: false, auth: { user: servers.user, pass: servers.password }, logger: false });
+    await client.connect();
+    await client.append('INBOX', rawMessage({ from: 'boss@acme.test', to: servers.user, subject: 'Arrives while idle', body: 'Hello', id: 'm-idle-2' }));
+    await client.logout();
+    const event = await waitFor(() => events.filter((e) => e.channel === 'mail:changed').slice(before).find((e) => e.payload.newInbox.some((m) => m.subject === 'Arrives while idle')));
+    expect(event).toBeTruthy();
+  });
+
+  it('finds Arabic mail however the words were spelled', async () => {
+    const client = new ImapFlow({ host: '127.0.0.1', port: servers.imapPort, secure: false, auth: { user: servers.user, pass: servers.password }, logger: false });
+    await client.connect();
+    await client.append('INBOX', rawMessage({ from: 'osama@acme.test', to: servers.user, subject: 'عرض مشروعٌ جديد من أسامة', body: 'مرحبا', id: 'm-ar' }));
+    await client.logout();
+    await waitFor(() => api.listMessages({ query: 'اسامه' }).total > 0);
+    expect(api.listMessages({ query: 'مشروع اسامة' }).messages[0].subject).toBe('عرض مشروعٌ جديد من أسامة');
+    expect(api.listMessages({ query: 'مشروع غائب' }).total).toBe(0);
+  });
+
+  it('frees the full copy of old mail but keeps it listed and opens it again from the server', async () => {
+    const accountIds = api.state().accounts.map((a) => a.id);
+    const before = db.storageInfo();
+    expect(before.bodies).toBeGreaterThan(0);
+    const listed = api.listMessages({ folderRole: 'any', threaded: false }).total;
+    const freed = db.freeOldBodies(accountIds, Date.now() + 400 * 86_400_000);
+    expect(freed).toBeGreaterThan(0);
+    expect(db.storageInfo().bodies).toBe(before.bodies - freed);
+    expect(api.listMessages({ folderRole: 'any', threaded: false }).total).toBe(listed);
+    // Freed mail is not downloaded again by the background prefetch…
+    expect(db.messagesToPrefetch(accountIds[0], 100).every((m) => m.dateValue >= db.bodyCutoff())).toBe(true);
+    // …but opening it fetches it from the server.
+    const invoice = api.listMessages({ query: 'quarterly' }).messages[0];
+    expect(db.getRaw(invoice.id)).toBeNull();
+    const { messages: [opened] } = await api.openThread(invoice.id);
+    expect(opened.content.text).toContain('Confidential amount 98765');
+    expect(() => api.freeSpace()).not.toThrow();
+    expect(api.storage().fileBytes).toBeGreaterThan(0);
   });
 });
 
