@@ -25,3 +25,16 @@ describe('mail core helpers', () => {
   });
 });
 
+
+describe('Windows taskbar identity', () => {
+  it('matches the installer shortcut, so the pinned icon and the window are one button', () => {
+    expect(core.appUserModelId({ platform: 'win32', store: false })).toBe('com.emargy.mail');
+    expect(core.appUserModelId({ platform: 'linux' })).toBe(null);
+  });
+
+  it('uses the package identity for the Store copy', () => {
+    const execPath = 'C:\\Program Files\\WindowsApps\\Emargy.EmargyMail_0.12.0.0_x64__3k1g6v2x5mq7a\\app\\Emargy Mail.exe';
+    expect(core.appUserModelId({ platform: 'win32', store: true, execPath })).toBe('Emargy.EmargyMail_3k1g6v2x5mq7a!EmargyMail');
+    expect(core.appUserModelId({ platform: 'win32', store: true, execPath: 'C:\\Apps\\Emargy Mail.exe' })).toBe(null);
+  });
+});
