@@ -123,7 +123,24 @@ function trustedAuthServers(account = {}) {
   return [...servers];
 }
 
+/**
+ * The Windows taskbar identity (AppUserModelID). It must equal the one on the shortcut the
+ * reader pinned or launched, otherwise Windows shows the pinned icon and the running window
+ * as two separate taskbar buttons.
+ * - Installer copy: the installer stamps shortcuts with the appId (com.emargy.mail).
+ * - Store copy: Windows uses <PackageFamilyName>!<ApplicationId>; the family name is read
+ *   from the install folder (WindowsApps\<Name>_<Version>_<Arch>__<PublisherId>\...).
+ * Returns null when nothing should be set (other systems, or a Store path we cannot read).
+ */
+function appUserModelId({ platform = process.platform, store = false, execPath = process.execPath, appId = 'com.emargy.mail', storeAppId = 'EmargyMail' } = {}) {
+  if (platform !== 'win32') return null;
+  if (!store) return appId;
+  const match = String(execPath).match(/WindowsApps[\\/]([^\\/_]+)_[^\\/]*?__([a-z0-9]+)[\\/]/i);
+  return match ? `${match[1]}_${match[2]}!${storeAppId}` : null;
+}
+
 module.exports = {
+  appUserModelId,
   classifyTrust,
   trustedAuthServers,
   headerValue,

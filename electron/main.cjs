@@ -14,6 +14,7 @@ const { ReminderWatcher } = require('./reminders.cjs');
 const { selectNotifications, notificationText } = require('./notify.cjs');
 const { DEFAULT_SETTINGS } = require('./api.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
+const { appUserModelId } = require('./core.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged && !process.env.EMARGY_USE_DIST ? 'http://127.0.0.1:5173' : null);
 const SAFE_EXTERNAL = new Set(['https:', 'http:', 'mailto:']);
@@ -41,6 +42,12 @@ if (process.env.EMARGY_DATA_DIR) app.setPath('userData', path.resolve(process.en
 
 app.enableSandbox();
 if (!app.requestSingleInstanceLock()) app.quit();
+// One taskbar button: the running window must carry the same identity as the pinned shortcut.
+{
+  const taskbarId = appUserModelId({ store: STORE_BUILD });
+  // The portable copy has no shortcut to match, so it keeps Electron's own identity.
+  if (taskbarId && app.isPackaged && !process.env.PORTABLE_EXECUTABLE_FILE) app.setAppUserModelId(taskbarId);
+}
 
 function emit(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
