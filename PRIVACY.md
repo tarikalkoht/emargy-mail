@@ -1,6 +1,6 @@
 # Emargy Mail privacy policy
 
-Last updated: November 17, 2026
+Last updated: November 21, 2026
 
 Emargy Mail is a desktop email app made by Emargy LLC (Sheridan, Wyoming, United States). This policy explains what the app does with your information.
 
@@ -21,6 +21,8 @@ The app connects only to these services, and only to do what you asked:
 - **Your email providers.** The app connects to the mail servers you set up (IMAP to read and SMTP to send), using encrypted connections. Examples are Gmail, Outlook.com or Microsoft 365, or your own hosting.
 - **Microsoft sign-in.** This is used only when you add an Outlook, Hotmail, Live or Microsoft 365 account with "Sign in with Microsoft". You sign in on Microsoft's own page in your browser. The app receives a token that it uses for mail access only.
 - **DNS lookups.** When you add an account, the app looks up public DNS records to find your mail servers. When it checks a sender's DKIM signature, it looks up that domain's public key.
+- **Newsletter senders, when you press Unsubscribe.** The app sends the unsubscribe request the newsletter asked for: a one-click request to the sender's own web address, a short email to its unsubscribe address, or its page opened in your browser. Nothing happens until you press the button and confirm.
+- **Spelling dictionaries (Linux only).** On Windows and macOS the app uses the spell checker built into the system. On Linux, the spell checker may download its English and Arabic dictionaries once from Google's dictionary servers; no text you type is sent.
 - **GitHub.** The copy downloaded from our website checks GitHub Releases for a signed update. The Microsoft Store copy does not do this; the Store updates it.
 
 ## The assistant (optional)

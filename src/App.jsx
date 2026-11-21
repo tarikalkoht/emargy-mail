@@ -511,6 +511,17 @@ export default function App() {
     });
   };
 
+  // Ctrl+P prints the open message instead of the whole window.
+  useEffect(() => {
+    const onKey = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'p' || view !== 'mail' || !thread?.messages?.length) return;
+      event.preventDefault();
+      document.querySelector('.thread-toolbar button[aria-label="' + t('print') + '"]')?.click();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view, thread, t]);
+
   // Keyboard shortcuts (ignored while typing).
   useEffect(() => {
     const onKey = (event) => {
@@ -663,6 +674,7 @@ export default function App() {
                 folders={state.folders}
                 state={state}
                 onAction={threadAction}
+                onState={(next) => next && setState(next)}
                 onSnooze={(message) => setSnoozing({ id: message.id, threadKey: message.threadKey })}
                 onRemind={remindIfNoReply}
                 onReply={reply}

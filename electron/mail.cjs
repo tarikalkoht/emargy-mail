@@ -147,6 +147,26 @@ function summarizeFetched(item, account) {
   };
 }
 
+/**
+ * How a newsletter can be left, from its List-Unsubscribe headers (RFC 2369 / RFC 8058).
+ * oneClick: the https link accepts a silent POST, so no page needs to be opened.
+ * Returns null when the message offers no way to unsubscribe.
+ */
+function listUnsubscribe(headerLines = []) {
+  const line = (name) => {
+    const found = headerLines.find((h) => String(h.key).toLowerCase() === name);
+    return found ? String(found.line).replace(/^[^:]*:/, '').replace(/\r?\n[ \t]+/g, ' ').trim() : '';
+  };
+  const value = line('list-unsubscribe');
+  if (!value) return null;
+  const targets = [...value.matchAll(/<\s*([^>\s]+)\s*>/g)].map((m) => m[1]);
+  const https = targets.find((t) => /^https:\/\//i.test(t)) || null;
+  const mailto = targets.find((t) => /^mailto:/i.test(t)) || null;
+  if (!https && !mailto) return null;
+  const oneClick = Boolean(https) && /list-unsubscribe\s*=\s*one-click/i.test(line('list-unsubscribe-post'));
+  return { https, mailto, oneClick };
+}
+
 async function parseRawMessage(raw) {
   const parsed = await simpleParser(raw, { skipImageLinks: true });
   const html = typeof parsed.html === 'string' ? parsed.html : '';
@@ -178,6 +198,7 @@ async function parseRawMessage(raw) {
     inlineImages,
     attachments,
     preview: text.replace(/\s+/g, ' ').trim().slice(0, 240),
+    unsubscribe: listUnsubscribe(parsed.headerLines),
   };
 }
 
@@ -279,6 +300,7 @@ module.exports = {
   extractAttachment,
   imapConfig,
   isLoopbackHost,
+  listUnsubscribe,
   parseRawMessage,
   sendRawMessage,
   summarizeFetched,
