@@ -18,7 +18,8 @@
 
 **Reading and writing**
 - Conversations, inbox tabs (primary, promotions, social, updates), drafts, attachments, signatures per account.
-- Rich editor with pasted images; undo send; **send later**; outbox with automatic retries.
+- Rich editor with pasted images and spell checking (Arabic and English); undo send; **send later**; outbox with automatic retries.
+- Print a message or save it as PDF; one-click **unsubscribe** from newsletters.
 - **Follow-up reminders** ("remind me if nobody replies in N days") and **snooze**.
 - Search on the device (Arabic-aware: hamza forms, taa marbuta, diacritics…) and on the mail server.
 

@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('emargy', {
   storage: invoke('storage:get'),
   freeSpace: invoke('storage:free'),
   sendNow: invoke('send:now'),
+  unsubscribe: invoke('message:unsubscribe'),
+  printMessage: invoke('message:print'),
   snooze: invoke('snooze:set'),
   remindIfNoReply: invoke('reminder:followup'),
   postponeReminder: invoke('reminder:postpone'),

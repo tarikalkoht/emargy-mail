@@ -228,6 +228,7 @@ function General({ t, state, setState, language, onToast }) {
         </select>
       </div>
       <Toggle label={t('confirmBeforeSend')} hint={t('confirmBeforeSendHint')} checked={s.confirmBeforeSend} onChange={(v) => update({ confirmBeforeSend: v })} />
+      <Toggle label={t('spellCheck')} hint={t('spellCheckHint')} checked={s.spellCheck !== false} onChange={(v) => update({ spellCheck: v })} />
       <Toggle label={t('markReadOnOpen')} checked={s.markReadOnOpen} onChange={(v) => update({ markReadOnOpen: v })} />
       <Toggle label={t('inboxTabs')} hint={t('inboxTabsHint')} checked={s.inboxTabs !== false} onChange={(v) => update({ inboxTabs: v })} />
       <Toggle label={t('closeToTray')} hint={t('closeToTrayHint')} checked={s.closeToTray !== false} onChange={(v) => update({ closeToTray: v })} />

@@ -15,6 +15,7 @@ const { selectNotifications, notificationText } = require('./notify.cjs');
 const { DEFAULT_SETTINGS } = require('./api.cjs');
 const { migrateLegacyStore } = require('./migrate.cjs');
 const { appUserModelId } = require('./core.cjs');
+const { createPrinter } = require('./print.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || (!app.isPackaged && !process.env.EMARGY_USE_DIST ? 'http://127.0.0.1:5173' : null);
 const SAFE_EXTERNAL = new Set(['https:', 'http:', 'mailto:']);
@@ -28,6 +29,7 @@ let api;
 let updater;
 let importance;
 let reminders;
+let printer;
 let tray = null;
 let trayIcon = null;
 let quitting = false;
@@ -120,7 +122,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webviewTag: false,
-      spellcheck: false,
+      spellcheck: true,
       devTools: !app.isPackaged,
     },
   });
@@ -208,6 +210,16 @@ function attachContextMenu(contents) {
     const ar = arabicUi();
     const items = [];
     const flags = params.editFlags || {};
+    if (params.isEditable && params.misspelledWord) {
+      // Spelling suggestions first, as in every editor.
+      const suggestions = (params.dictionarySuggestions || []).slice(0, 6);
+      for (const word of suggestions) items.push({ label: word, click: () => contents.replaceMisspelling(word) });
+      if (!suggestions.length) items.push({ label: ar ? 'لا توجد اقتراحات' : 'No suggestions', enabled: false });
+      items.push(
+        { label: ar ? 'إضافة إلى القاموس' : 'Add to dictionary', click: () => contents.session.addWordToSpellCheckerDictionary(params.misspelledWord) },
+        { type: 'separator' },
+      );
+    }
     if (params.isEditable) {
       items.push(
         { label: ar ? 'تراجع' : 'Undo', role: 'undo', enabled: flags.canUndo },
@@ -252,6 +264,20 @@ function setTitleBarColors({ dark } = {}) {
     mainWindow.setTitleBarOverlay({ color: '#00000000', symbolColor: dark ? '#e6e9e7' : '#1b1f22', height: TITLEBAR_HEIGHT });
   } catch { /* older Windows: nothing to do */ }
   return true;
+}
+
+/**
+ * Spelling: Windows and macOS use the system's own spell checker (no download).
+ * Arabic and English are checked together where the system has them.
+ */
+function applySpellCheck(enabled) {
+  const ses = session.defaultSession;
+  ses.setSpellCheckerEnabled(Boolean(enabled));
+  if (!enabled || process.platform === 'darwin') return;
+  const available = new Set(ses.availableSpellCheckerLanguages || []);
+  const wanted = ['en-US', 'en-GB', 'ar'].filter((code) => available.has(code) || [...available].some((a) => a.startsWith(code)));
+  const languages = wanted.map((code) => (available.has(code) ? code : [...available].find((a) => a.startsWith(code)))).filter(Boolean);
+  try { if (languages.length) ses.setSpellCheckerLanguages([...new Set(languages)]); } catch { /* keep the system default */ }
 }
 
 function applyLoginItem(enabled) {
@@ -311,6 +337,7 @@ function registerHandlers() {
   handle('settings:update', (changes) => {
     const result = api.updateSettings(changes);
     if (changes && 'startAtLogin' in changes) applyLoginItem(result.settings.startAtLogin);
+    if (changes && 'spellCheck' in changes) applySpellCheck(result.settings.spellCheck !== false);
     if (changes?.aiAlerts) importance.runOnce().catch(() => {});
     if (changes && 'autoUpdate' in changes) {
       if (result.settings.autoUpdate) updater.start(1000);
@@ -370,6 +397,13 @@ function registerHandlers() {
   handle('project:reorder', (ids) => api.reorderProjects(ids));
   handle('storage:get', () => api.storage());
   handle('send:now', (id) => api.sendNow(id));
+  handle('message:print', (html) => printer.print(html));
+  handle('message:unsubscribe', async (messageId) => {
+    const result = await api.unsubscribe(messageId);
+    // Only the sender's own page is left: it opens in the browser (with the usual check).
+    if (result.method === 'page') await openExternalSafely(result.url);
+    return result;
+  });
   handle('snooze:set', ({ messageId, until }) => api.snooze(messageId, until));
   handle('reminder:followup', ({ messageId, days }) => api.remindIfNoReply(messageId, days));
   handle('reminder:postpone', ({ id, until }) => api.postponeReminder(id, until));
@@ -633,10 +667,12 @@ app.whenReady().then(() => {
     notify: notifyImportant,
   });
   reminders = new ReminderWatcher({ db, sync, emit: forward, notify: notifyReminder });
+  printer = createPrinter({ BrowserWindow, session, parent: () => mainWindow });
   registerHandlers();
   createTray();
   createWindow();
   applyLoginItem(api.state().settings.startAtLogin);
+  applySpellCheck(api.state().settings.spellCheck !== false);
   setTimeout(() => importance.poke(), 15_000);
   sync.start();
   outbox.start();

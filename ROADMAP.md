@@ -9,6 +9,7 @@
 - ✅ Project and receiving address shown on every message; projects and accounts in your own order; account pictures.
 - ✅ Generic IMAP/SMTP with server auto-detection; Gmail, Zoho and others by app password; Sign in with Microsoft (OAuth); Resend.
 - ✅ Conversations, inbox tabs, attachments, drafts, signatures, rich editor, undo send.
+- ✅ Spell checking while typing (Arabic and English, suggestions on right-click), printing a message (or Save as PDF), one-click unsubscribe from newsletters.
 - ✅ Encrypted local storage with the key held by the operating system; body-cache retention and "Free up space".
 - ✅ IMAP IDLE on the inbox; older mail and server search on demand.
 - ✅ Search on the device (Arabic-aware) and on the server.
@@ -32,10 +33,13 @@
 2. ⬜ **macOS signing and notarization** (the build supports it once the Apple certificates are added).
 3. 🔶 **Rules:** today per sender (spam verdict, inbox tab). Next: conditions → move, label, mark read, forward.
 4. ⬜ **Templates** (canned replies), insertable from the composer.
-5. ⬜ **Import / export and backup** of settings, accounts (without passwords) and local mail.
-6. ⬜ **Gmail and Zoho sign-in with OAuth** instead of app passwords.
-7. 🔶 **Assistant:** detect tasks and dates in mail; suggest follow-ups automatically.
-8. ⬜ **Local MCP server** with explicit read / draft / send permissions for agents.
+5. ⬜ **Meeting invitations (.ics):** show the invitation, accept or decline.
+6. ⬜ **Code signing** for the installer from the website and GitHub (Azure Artifact Signing), so SmartScreen stops warning. The Store copy is already trusted.
+7. 🔶 **Gmail inbox tabs:** built, not yet tried on a real Gmail account.
+8. ⬜ **Import / export and backup** of settings, accounts (without passwords) and local mail.
+9. ⬜ **Gmail and Zoho sign-in with OAuth** instead of app passwords.
+10. 🔶 **Assistant:** detect tasks and dates in mail; suggest follow-ups automatically.
+11. ⬜ **Local MCP server** with explicit read / draft / send permissions for agents.
 
 ## Later
 

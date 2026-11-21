@@ -290,7 +290,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .thread-message time { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .avatar { flex: none; display: grid; place-items: center; border-radius: 50%; font-weight: 600; font-size: 14px; color: hsl(var(--hue) 45% 30%); background: hsl(var(--hue) 45% 90%); }
 :root[data-theme='dark'] .avatar { color: hsl(var(--hue) 50% 82%); background: hsl(var(--hue) 25% 24%); }
-.message-head { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto auto; align-items: start; gap: 12px; padding: 14px 14px 6px 16px; }
+.message-head { display: grid; grid-template-columns: 36px minmax(0, 1fr) repeat(4, auto); align-items: start; gap: 12px; padding: 14px 14px 6px 16px; }
 .message-who { min-width: 0; }
 .sender-line { display: flex; align-items: baseline; gap: 8px; border: 0; background: none; padding: 0; text-align: start; max-width: 100%; }
 .sender-line strong { font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -712,3 +712,7 @@ button.page-row-main:hover { background: var(--surface-2); }
 .page-row.due .page-row-text strong { font-weight: 600; }
 .reminder-actions { display: flex; gap: 6px; flex: none; }
 .scheduled-tag { color: var(--accent); }
+
+/* Newsletters */
+.unsubscribe-link { display: flex; width: fit-content; align-items: center; gap: 5px; margin: 1px 0 2px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+.unsubscribe-link:hover { color: var(--accent); }

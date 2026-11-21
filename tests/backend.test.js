@@ -389,6 +389,41 @@ describe('encrypted storage, sync and outbox against local mail servers', () => 
     expect(api.dismissReminder(reminder.id).reminders.some((r) => r.id === reminder.id)).toBe(false);
   });
 
+  it('unsubscribes from a newsletter: one-click, by email, never to a private address, never for spam', async () => {
+    const account = api.state().accounts[0];
+    const client = new ImapFlow({ host: '127.0.0.1', port: servers.imapPort, secure: false, auth: { user: servers.user, pass: servers.password }, logger: false });
+    await client.connect();
+    const newsletter = (id, subject, lines) => ['From: News <news@shop.test>', `To: ${servers.user}`, `Subject: ${subject}`, `Message-ID: <${id}@shop.test>`, `Date: ${new Date().toUTCString()}`, ...lines, '', 'Deals'].join('\r\n');
+    await client.append('INBOX', newsletter('n1', 'Deals one-click', ['List-Unsubscribe: <mailto:leave@shop.test?subject=stop>, <https://shop.test/u?id=7>', 'List-Unsubscribe-Post: List-Unsubscribe=One-Click']));
+    await client.append('INBOX', newsletter('n2', 'Deals by mail', ['List-Unsubscribe: <mailto:leave@shop.test?subject=stop%20please>']));
+    await client.append('INBOX', newsletter('n3', 'Deals private', ['List-Unsubscribe: <https://192.168.1.1/u>', 'List-Unsubscribe-Post: List-Unsubscribe=One-Click']));
+    await client.logout();
+    await api.syncAccount(account.id);
+    const find = (subject) => api.listMessages({ folderRole: 'any', query: subject, threaded: false }).messages.find((m) => m.subject === subject);
+
+    const calls = [];
+    const withFetch = createApi({ db, sync, outbox, emit: () => {}, fetchImpl: async (url, init) => { calls.push({ url, init }); return { ok: true, status: 200 }; } });
+    const { messages: [opened] } = await withFetch.openThread(find('Deals one-click').id);
+    expect(opened.content.unsubscribe).toEqual({ https: 'https://shop.test/u?id=7', mailto: 'mailto:leave@shop.test?subject=stop', oneClick: true });
+    expect((await withFetch.unsubscribe(find('Deals one-click').id)).method).toBe('oneClick');
+    expect(calls).toEqual([expect.objectContaining({ url: 'https://shop.test/u?id=7', init: expect.objectContaining({ method: 'POST', body: 'List-Unsubscribe=One-Click', redirect: 'manual' }) })]);
+
+    const byMail = await withFetch.unsubscribe(find('Deals by mail').id);
+    expect(byMail).toMatchObject({ method: 'email', to: 'leave@shop.test' });
+    expect(db.listOutbox().find((item) => item.id === byMail.outboxId)).toMatchObject({ to: 'leave@shop.test', subject: 'stop please' });
+
+    await expect(withFetch.unsubscribe(find('Deals private').id)).rejects.toThrow(/safe way/);
+    expect(calls).toHaveLength(1);
+    await expect(withFetch.unsubscribe(api.listMessages({ folderRole: 'inbox' }).messages.find((m) => !m.subject.startsWith('Deals')).id)).rejects.toThrow(/does not offer/);
+    const spammy = db.getMessage(find('Deals one-click').id);
+    spammy.trust = 'spam'; // as if the server had flagged it
+    await expect(withFetch.unsubscribe(spammy.id)).rejects.toThrow(/spam/);
+    spammy.trust = '';
+    expect(api.updateSettings({ spellCheck: false }).settings.spellCheck).toBe(false);
+    expect(api.updateSettings({ spellCheck: 'yes' }).settings.spellCheck).toBe(false);
+    api.updateSettings({ spellCheck: true });
+  });
+
   it('goes back to watching the inbox after working in another folder', async () => {
     const sent = api.listMessages({ folderRole: 'sent' }).messages[0];
     expect(sent).toBeTruthy();

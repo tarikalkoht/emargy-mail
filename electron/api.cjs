@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
   mutedProjects: [],
   emptyScene: 'trays',
   bodyCacheDays: 90,
+  spellCheck: true,
 };
 const SETTING_RULES = {
   theme: (v) => ['system', 'light', 'dark'].includes(v),
@@ -54,6 +55,7 @@ const SETTING_RULES = {
   mutedProjects: (v) => Array.isArray(v) && v.length < 200 && v.every((id) => typeof id === 'string' && id.length < 80),
   emptyScene: (v) => ['trays', 'dawn', 'night', 'plain', 'custom'].includes(v),
   bodyCacheDays: (v) => [0, 30, 90, 365].includes(v),
+  spellCheck: (v) => typeof v === 'boolean',
 };
 
 function text(value, max = 500) {
@@ -87,6 +89,31 @@ function futureTime(value, now = Date.now()) {
   if (!Number.isFinite(at) || at < now + 30_000) throw new Error('Choose a time in the future.');
   if (at > now + 366 * DAY_MS) throw new Error('Choose a time within the next year.');
   return Math.round(at);
+}
+
+/**
+ * An unsubscribe link may only reach the public internet: never this computer, the local
+ * network or a bare IP address, so a hostile email cannot use it to poke at a router.
+ */
+function publicHttpsUrl(value) {
+  let url;
+  try { url = new URL(String(value)); } catch { return null; }
+  if (url.protocol !== 'https:' || url.username || url.password) return null;
+  const host = url.hostname.toLowerCase();
+  if (!host.includes('.') || host === 'localhost' || /\.(local|localhost|internal|lan|home|arpa)$/.test(host)) return null;
+  if (/^[\d.]+$/.test(host) || host.startsWith('[')) return null;
+  return url;
+}
+
+/** mailto:a@b?subject=x&body=y -> { to, subject, body } (one address only). */
+function parseMailto(value) {
+  const match = String(value).match(/^mailto:([^?]+)(?:\?(.*))?$/i);
+  if (!match) return null;
+  let to;
+  try { to = decodeURIComponent(match[1]).split(',')[0].trim(); } catch { return null; }
+  if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(to)) return null;
+  const params = new URLSearchParams(match[2] || '');
+  return { to, subject: (params.get('subject') || 'unsubscribe').slice(0, 200), body: (params.get('body') || 'unsubscribe').slice(0, 1000) };
 }
 
 /** An account picture: a small image the app already resized, or null to remove it. */
@@ -141,7 +168,7 @@ async function testImapLogin(account) {
 
 const { verifiedDkimDomains } = require('./dkim.cjs');
 
-function createApi({ db, sync, outbox, emit = () => {} }) {
+function createApi({ db, sync, outbox, emit = () => {}, fetchImpl = globalThis.fetch }) {
   const settings = () => {
     const saved = db.getSetting('preferences', {});
     const merged = { ...DEFAULT_SETTINGS, ...saved };
@@ -755,6 +782,52 @@ function createApi({ db, sync, outbox, emit = () => {} }) {
       }
       await outbox.process();
       return api.state();
+    },
+
+    /**
+     * Leave a newsletter. The way out is read again from the stored message (never taken
+     * from the interface): a silent one-click request when the sender supports it, else an
+     * email to the sender's unsubscribe address, else its page in the browser.
+     */
+    async unsubscribe(messageId) {
+      const message = db.getMessage(text(messageId, 200));
+      if (['spam', 'suspicious'].includes(message.trust)) throw new Error('This looks like spam: report it as spam instead of unsubscribing.');
+      const content = await openOne(message);
+      const way = content.unsubscribe;
+      if (!way) throw new Error('This sender does not offer a way to unsubscribe.');
+      const sender = content.fromAddress || message.fromAddress;
+      const url = way.https && publicHttpsUrl(way.https);
+      if (way.oneClick && url) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15_000);
+        try {
+          const response = await fetchImpl(url.href, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Emargy-Mail' },
+            body: 'List-Unsubscribe=One-Click',
+            redirect: 'manual', // a redirect is not followed: it could point anywhere
+            signal: controller.signal,
+          });
+          if (!response.ok && !(response.status >= 300 && response.status < 400)) throw new Error(`The sender answered ${response.status}.`);
+        } catch (error) {
+          throw new Error(error.name === 'AbortError' ? 'The sender did not answer. Try again later.' : `Could not unsubscribe: ${error.message}`);
+        } finally {
+          clearTimeout(timer);
+        }
+        db.audit('newsletter.unsubscribed', { sender, method: 'one-click' });
+        return { method: 'oneClick', sender, state: api.state() };
+      }
+      const mail = way.mailto && parseMailto(way.mailto);
+      if (mail) {
+        const result = await api.approveAndSend({ accountId: message.accountId, to: mail.to, subject: mail.subject, body: mail.body });
+        db.audit('newsletter.unsubscribed', { sender, method: 'email', to: mail.to });
+        return { method: 'email', sender, to: mail.to, outboxId: result.outboxId, sendAt: result.sendAt, state: result.state };
+      }
+      if (url) {
+        db.audit('newsletter.unsubscribed', { sender, method: 'page' });
+        return { method: 'page', sender, url: url.href, state: api.state() };
+      }
+      throw new Error('This sender does not offer a safe way to unsubscribe.');
     },
 
     // Reminders and snooze --------------------------------------------------------

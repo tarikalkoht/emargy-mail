@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { prepareEmailHtml } from '../src/emailHtml.js';
+import { prepareEmailHtml, printableEmailHtml } from '../src/emailHtml.js';
 
 const tracker = '<p>Hi</p><img src="https://tracker.example/pixel.gif?u=1" width="1"><div style="background:url(https://evil.example/bg.png)">x</div>';
 
@@ -57,5 +57,30 @@ describe('prepareEmailHtml', () => {
     const { srcDoc, blockedCount } = prepareEmailHtml('<style>@import url(https://x.example/a.css); body{background:url("https://x.example/b.png")}</style><p>t</p>');
     expect(srcDoc).not.toContain('x.example');
     expect(blockedCount).toBe(1);
+  });
+});
+
+describe('printableEmailHtml', () => {
+  const labels = { from: 'From', to: 'To', cc: 'Cc', date: 'Date', attachments: 'Attachments' };
+  it('prints the headers and the sanitized body, with no script and no remote images', () => {
+    const page = printableEmailHtml({
+      subject: 'Offer <b>now</b>', from: 'Osama <o@x.test>', to: 'me@x.test', date: '21 Nov 2026',
+      html: `${tracker}<script>alert(1)</script><img src="cid:logo">`, inlineImages: { logo: 'data:image/png;base64,AAAA' },
+      attachments: [{ filename: 'offer.pdf' }],
+    }, { labels, dir: 'rtl', lang: 'ar' });
+    expect(page).toContain('dir="rtl"');
+    expect(page).toContain('Offer &lt;b&gt;now&lt;/b&gt;');
+    expect(page).toContain('Osama &lt;o@x.test&gt;');
+    expect(page).toContain('offer.pdf');
+    expect(page).toContain('data:image/png;base64,AAAA');
+    expect(page).not.toContain('<script');
+    expect(page).not.toContain('tracker.example');
+    expect(page).toContain("script-src 'none'");
+    expect(page).not.toContain('Cc');
+  });
+
+  it('keeps plain-text mail as text', () => {
+    const page = printableEmailHtml({ subject: 's', text: 'a <b> c' }, { labels });
+    expect(page).toContain('a &lt;b&gt; c');
   });
 });

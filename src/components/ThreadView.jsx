@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlarmClock, Archive, BellRing, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Reply, ReplyAll, ShieldAlert, ShieldCheck, Sparkles, Trash2,
+  AlarmClock, Archive, BellOff, BellRing, ChevronDown, Download, FileText, Flag, Forward, FolderInput, ImageOff, Languages, LoaderCircle, Mail, MailOpen, Paperclip, Printer, Reply, ReplyAll, ShieldAlert, ShieldCheck, Sparkles, Trash2,
 } from 'lucide-react';
 import { DeliveryBadge, TrustBadge } from './MessageList';
 import AiPanel from './AiPanel';
 import { FolderPicker } from './ContextMenu';
-import { prepareEmailHtml, sanitizeForEditor } from '../emailHtml';
+import Modal from './Modal';
+import { prepareEmailHtml, printableEmailHtml, sanitizeForEditor } from '../emailHtml';
 import { classNames, displayName, escapeHtml, formatFullDate, formatListDate, formatSize, initial, paragraphsToHtml, parseAddresses, senderHue, textToHtml } from '../lib/format';
 
 function MessageFrame({ html, title }) {
@@ -33,7 +34,7 @@ function Avatar({ value, size = 36, pictures }) {
   return <span className="avatar" style={{ '--hue': senderHue(value), width: size, height: size }} aria-hidden="true">{initial(value)}</span>;
 }
 
-function ThreadMessage({ message, pictures, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate, onMoveToJunk, onNotSpam }) {
+function ThreadMessage({ message, pictures, t, language, expanded, onToggle, onTrustSender, onReply, onTranslate, onMoveToJunk, onNotSpam, onPrint, onUnsubscribe }) {
   const [showOnce, setShowOnce] = useState(false);
   const [details, setDetails] = useState(false);
   const content = message.content;
@@ -62,6 +63,9 @@ function ThreadMessage({ message, pictures, t, language, expanded, onToggle, onT
             <TrustBadge trust={message.trust} t={t} />
             {message.folderRole === 'sent' && <DeliveryBadge delivery={message.delivery} t={t} />}
           </button>
+          {content.unsubscribe && onUnsubscribe && !['spam', 'suspicious'].includes(message.trust) && message.folderRole !== 'sent' && (
+            <button className="unsubscribe-link" onClick={() => onUnsubscribe(message)}><BellOff size={13} />{t('unsubscribe')}</button>
+          )}
           <button className="recipients-line" onClick={() => setDetails(!details)} dir="auto">
             {t('toLabel')} {parseAddresses(content.to).map((a) => a.name || a.address).join(', ') || '—'}<ChevronDown size={13} />
           </button>
@@ -76,6 +80,7 @@ function ThreadMessage({ message, pictures, t, language, expanded, onToggle, onT
           )}
         </div>
         <time className="message-time" title={formatFullDate(content.date, language)}>{formatListDate(content.date, language)}</time>
+        <button className="icon-button quiet" onClick={() => onPrint(message)} title={t('print')} aria-label={t('print')}><Printer size={16} /></button>
         <button className="icon-button quiet" onClick={() => onTranslate(message)} title={t('aiTranslate')} aria-label={t('aiTranslate')}><Languages size={16} /></button>
         <button className="icon-button quiet" onClick={() => onReply('reply', message)} title={t('reply')} aria-label={t('reply')}><Reply size={16} /></button>
       </header>
@@ -158,11 +163,48 @@ Subject: ${c.subject || ''}
 ${c.text || ''}`;
 }
 
-export default function ThreadView({ t, language, thread, loading, project, account, folders, state, onAction, onSnooze, onRemind, onReply, onTrustSender, onToast, composer, empty }) {
+export default function ThreadView({ t, language, thread, loading, project, account, folders, state, onState, onAction, onSnooze, onRemind, onReply, onTrustSender, onToast, composer, empty }) {
   const [expanded, setExpanded] = useState(new Set());
   const [moveAt, setMoveAt] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [remindOpen, setRemindOpen] = useState(false);
+  const [unsubscribing, setUnsubscribing] = useState(null); // message waiting for confirmation
+  const [leaving, setLeaving] = useState(false);
+  const errorText = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+  /** One message, with its headers, through the system print dialog (or Save as PDF). */
+  const printMessage = async (message) => {
+    const content = message.content;
+    const html = printableEmailHtml({
+      ...content,
+      date: formatFullDate(content.date, language),
+      allowRemote: Boolean(message.imagesTrusted),
+    }, {
+      labels: { from: t('from'), to: t('to'), cc: t('cc'), date: t('date'), attachments: t('attachments') },
+      dir: language === 'ar' ? 'rtl' : 'ltr',
+      lang: language,
+    });
+    try {
+      await window.emargy.printMessage(html);
+    } catch (error) {
+      onToast(errorText(error), 'error');
+    }
+  };
+
+  const unsubscribe = async () => {
+    const message = unsubscribing;
+    setLeaving(true);
+    try {
+      const result = await window.emargy.unsubscribe(message.id);
+      onState?.(result.state);
+      onToast({ oneClick: t('unsubscribedDone'), email: t('unsubscribeEmailSent', { to: result.to }), page: t('unsubscribePageOpened') }[result.method]);
+      setUnsubscribing(null);
+    } catch (error) {
+      onToast(errorText(error), 'error');
+    } finally {
+      setLeaving(false);
+    }
+  };
   // Mail you sent shows the sending account's own picture.
   const pictures = useMemo(() => new Map((state?.accounts || []).filter((a) => a.picture).map((a) => [String(a.email).toLowerCase(), a.picture])), [state?.accounts]);
   const [job, setJob] = useState(null);
@@ -239,6 +281,7 @@ export default function ThreadView({ t, language, thread, loading, project, acco
         <button className="icon-button quiet" onClick={() => onAction('trash', ids)} title={`${t('delete')} (Del)`} aria-label={t('delete')}><Trash2 size={17} /></button>
         <button className={classNames('icon-button quiet', flagged && 'flag-on')} onClick={() => onAction(flagged ? 'unflag' : 'flag', ids)} title={`${flagged ? t('unflag') : t('flag')} (S)`} aria-label={t('flag')}><Flag size={17} /></button>
         <button className="icon-button quiet" onClick={() => onAction('unread', ids)} title={`${t('markUnread')} (U)`} aria-label={t('markUnread')}><MailOpen size={17} /></button>
+        <button className="icon-button quiet" onClick={() => printMessage(last)} title={`${t('print')} (Ctrl+P)`} aria-label={t('print')}><Printer size={17} /></button>
         {onSnooze && messages.some((m) => m.folderRole === 'inbox') && (
           <button className="icon-button quiet" onClick={() => onSnooze(last)} title={`${t('snooze')} (B)`} aria-label={t('snooze')}><AlarmClock size={17} /></button>
         )}
@@ -283,6 +326,8 @@ export default function ThreadView({ t, language, thread, loading, project, acco
               onTrustSender={onTrustSender}
               onReply={onReply}
               onTranslate={(m) => translate(m)}
+              onPrint={printMessage}
+              onUnsubscribe={setUnsubscribing}
               onNotSpam={(m) => onAction('notSpam', [m.id])}
               onMoveToJunk={(() => {
                 const junk = folders.find((f) => f.accountId === message.accountId && f.role === 'junk');
@@ -301,6 +346,22 @@ export default function ThreadView({ t, language, thread, loading, project, acco
         )}
         <div ref={bottomRef} />
       </div>
+      {unsubscribing && (() => {
+        const way = unsubscribing.content.unsubscribe;
+        const sender = displayName(unsubscribing.content.from);
+        const how = way.oneClick ? t('unsubscribeHowOneClick') : way.mailto ? t('unsubscribeHowEmail') : t('unsubscribeHowPage');
+        return (
+          <Modal title={t('unsubscribeTitle', { sender })} onClose={() => setUnsubscribing(null)} width="460px">
+            <div className="modal-body">
+              <p className="section-hint" dir="auto">{how}</p>
+              <div className="modal-actions">
+                <button className="button ghost" onClick={() => setUnsubscribing(null)}>{t('cancel')}</button>
+                <button className="button primary" autoFocus disabled={leaving} onClick={unsubscribe}>{leaving ? <LoaderCircle className="spin" size={15} /> : <BellOff size={15} />}{t('unsubscribe')}</button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
